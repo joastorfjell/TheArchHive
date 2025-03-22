@@ -27,15 +27,10 @@ if command -v pacman &> /dev/null; then
     read -p "Install development packages? (y/n) " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        sudo pacman -S --needed --noconfirm - < "$PACKAGES_DIR/dev.txt"
+    # Minimal development tools only
+    sudo pacman -S --needed --noconfirm python python-pip
     fi
     
-    read -p "Install desktop environment packages? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        sudo pacman -S --needed --noconfirm - < "$PACKAGES_DIR/desktop.txt"
-    fi
-else
     echo "Pacman not found. Skipping package installation."
     echo "Please install packages manually from the package lists."
 fi
