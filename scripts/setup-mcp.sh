@@ -13,9 +13,14 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
-# Install psutil
+# Install psutil using pacman instead of pip (to avoid externally-managed-environment error)
 echo "Installing required Python dependencies..."
-pip install psutil --user || sudo pip install psutil
+if ! pacman -Q python-psutil &> /dev/null; then
+    echo "Installing python-psutil package..."
+    sudo pacman -S --needed python-psutil
+else
+    echo "python-psutil is already installed."
+fi
 
 # Create directories
 mkdir -p ~/.config/thearchhive
