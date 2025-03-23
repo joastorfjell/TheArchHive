@@ -624,7 +624,7 @@ configure_claude() {
   cat > "$CONFIG_DIR/claude_config.json" << EOF
 {
   "claude_api_key": "$API_KEY",
-  "claude_model": "claude-3-5-sonnet-20240229",
+  "claude_model": "claude-3-7-sonnet-20250219",
   "max_tokens": 4096,
   "history_size": 10,
   "mcp_url": "http://127.0.0.1:$MCP_PORT"
