@@ -137,6 +137,7 @@ prompt() {
 }
 
 # Check system requirements
+# Check system requirements
 check_requirements() {
   section_header "Checking System Requirements"
   
@@ -148,7 +149,7 @@ check_requirements() {
   fi
   
   # Check for required commands
-  local requirements=("git" "python" "nvim" "curl" "jq")
+  local requirements=("git" "python" "nvim" "curl" "jq" "tmux")
   local missing_requirements=()
   
   for cmd in "${requirements[@]}"; do
