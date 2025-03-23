@@ -433,13 +433,20 @@ function M.init()
   init_config()
   
   -- Create buffer and window with error handling
-  local ok, buf_win = pcall(init_window)
+  local ok, result = pcall(init_window)
   if not ok then
-    print("Error initializing Claude window: " .. tostring(buf_win))
+    print("Error initializing Claude window: " .. tostring(result))
     return nil, nil
   end
   
-  local buf, win = buf_win[1], buf_win[2]
+  -- Now result contains the actual return values from init_window,
+  -- which are buf and win directly, not in a table
+  local buf, win = result, nil
+  
+  if type(result) == "table" then
+    -- If init_window returned a table, unpack it
+    buf, win = unpack(result)
+  end
   
   -- Initial message
   local welcome_msg = [[
