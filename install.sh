@@ -21,10 +21,13 @@ SCRIPTS_DIR="$CONFIG_DIR/scripts"
 DATA_DIR="$HOME/.local/share/thearchhive"
 BACKUP_DIR="$DATA_DIR/backups"
 SNAPSHOT_DIR="$DATA_DIR/snapshots"
+VENV_DIR="$DATA_DIR/venv"
 MCP_PORT=5678
 NVIM_CONFIG_DIR="$HOME/.config/nvim"
-CLAUDESCRIPT_PATH="$SCRIPTS_DIR/claudescript.py"
+CLAUDESCRIPT_PATH="$SCRIPTS_DIR/ClaudeScript.py"
+OPERATING_TOOLS_PATH="$SCRIPTS_DIR/OperatingTools.py"
 
+# Function to handle Python module installation with externally-managed-environment handling
 install_python_modules() {
     local modules=("$@")
     
@@ -68,43 +71,40 @@ install_python_modules() {
         
         # Check if venv module is available
         if python -m venv --help >/dev/null 2>&1; then
-            local venv_dir="$HOME/.local/share/thearchhive/venv"
-            mkdir -p "$(dirname "$venv_dir")"
+            mkdir -p "$(dirname "$VENV_DIR")"
             
             # Create virtual environment
-            python -m venv "$venv_dir"
+            python -m venv "$VENV_DIR"
             
             # Activate and install
-            source "$venv_dir/bin/activate"
+            source "$VENV_DIR/bin/activate"
             pip install "${modules[@]}"
             deactivate
             
             # Add activation to configuration
-            local config_dir="$HOME/.config/thearchhive"
-            mkdir -p "$config_dir"
-            echo "source $venv_dir/bin/activate" > "$config_dir/activate_venv.sh"
-            chmod +x "$config_dir/activate_venv.sh"
+            mkdir -p "$CONFIG_DIR"
+            echo "source $VENV_DIR/bin/activate" > "$CONFIG_DIR/activate_venv.sh"
+            chmod +x "$CONFIG_DIR/activate_venv.sh"
             
             # Create wrapper script for MCP server
-            local scripts_dir="$config_dir/scripts"
-            mkdir -p "$scripts_dir"
+            mkdir -p "$SCRIPTS_DIR"
             
-            cat > "$scripts_dir/run_mcp_server.sh" << 'EOF'
+            cat > "$SCRIPTS_DIR/run_mcp_server.sh" << 'EOF'
 #!/bin/bash
 source "$HOME/.config/thearchhive/activate_venv.sh"
 python "$HOME/.config/thearchhive/scripts/mcp-server.py" "$@"
 EOF
-            chmod +x "$scripts_dir/run_mcp_server.sh"
+            chmod +x "$SCRIPTS_DIR/run_mcp_server.sh"
             
             # Update systemd service to use wrapper
             local systemd_dir="$HOME/.config/systemd/user"
             if [ -f "$systemd_dir/thearchhive-mcp.service" ]; then
-                sed -i 's|ExecStart=/usr/bin/python.*|ExecStart='"$scripts_dir"'/run_mcp_server.sh|' "$systemd_dir/thearchhive-mcp.service"
+                sed -i 's|ExecStart=/usr/bin/python.*|ExecStart='"$SCRIPTS_DIR"'/run_mcp_server.sh|' "$systemd_dir/thearchhive-mcp.service"
                 systemctl --user daemon-reload
             fi
             
             echo "Successfully installed modules in virtual environment"
-            echo "Use $config_dir/activate_venv.sh to activate the environment when needed"
+            echo "Use $CONFIG_DIR/activate_venv.sh to activate the environment when needed"
             return 0
         else
             echo "Python venv module not available. Please install python-venv package"
@@ -173,16 +173,28 @@ check_requirements() {
   fi
   
   # Check for Python modules
-  if [ ${#missing_modules[@]} -gt 0 ]; then
-  	echo -e "${YELLOW}Missing required Python modules. Install them with:${NC}"
-  	echo -e "pip install ${missing_modules[*]}"
+  local python_modules=("flask" "psutil")
+  local missing_modules=()
   
-  	prompt "Install missing Python modules now? (y/n)" INSTALL_MODULES
-  	if [[ "$INSTALL_MODULES" =~ ^[Yy]$ ]]; then
-    		install_python_modules "${missing_modules[@]}"
-  	else
-    		echo -e "${YELLOW}Continuing installation without required Python modules. Some features may not work.${NC}"
-  	fi
+  for module in "${python_modules[@]}"; do
+    if python -c "import $module" 2>/dev/null; then
+      log "✓ Found Python module $module"
+    else
+      log "${RED}✗ Missing Python module $module${NC}"
+      missing_modules+=("$module")
+    fi
+  done
+  
+  if [ ${#missing_modules[@]} -gt 0 ]; then
+    echo -e "${YELLOW}Missing required Python modules. Install them with:${NC}"
+    echo -e "pip install ${missing_modules[*]}"
+    
+    prompt "Install missing Python modules now? (y/n)" INSTALL_MODULES
+    if [[ "$INSTALL_MODULES" =~ ^[Yy]$ ]]; then
+      install_python_modules "${missing_modules[@]}"
+    else
+      echo -e "${YELLOW}Continuing installation without required Python modules. Some features may not work.${NC}"
+    fi
   fi
 }
 
@@ -267,6 +279,36 @@ EOF
   fi
   chmod +x "$CLAUDESCRIPT_PATH"
   
+  # Locate the Operating Tools implementation
+  OPERATING_TOOLS_SRC_PATH=""
+  POSSIBLE_PATHS=(
+    "$REPO_DIR/OperatingTools.py"
+    "$REPO_DIR/scripts/OperatingTools.py"
+  )
+  
+  for path in "${POSSIBLE_PATHS[@]}"; do
+    if [ -f "$path" ]; then
+      OPERATING_TOOLS_SRC_PATH="$path"
+      break
+    fi
+  done
+  
+  if [ -z "$OPERATING_TOOLS_SRC_PATH" ]; then
+    log "${YELLOW}Warning: Operating Tools implementation not found. Creating a placeholder.${NC}"
+    # Create a basic placeholder
+    cat > "$OPERATING_TOOLS_PATH" << EOF
+#!/usr/bin/env python3
+print("Error: This is a placeholder Operating Tools implementation. The actual script was not found during installation.")
+print("Please create a proper Operating Tools implementation.")
+exit(1)
+EOF
+  else
+    # Copy Operating Tools implementation
+    cat "$OPERATING_TOOLS_SRC_PATH" > "$OPERATING_TOOLS_PATH"
+    log "✓ Installed Operating Tools from $OPERATING_TOOLS_SRC_PATH"
+  fi
+  chmod +x "$OPERATING_TOOLS_PATH"
+  
   # Similar process for backup script
   BACKUP_SCRIPT_PATH=""
   POSSIBLE_PATHS=(
@@ -325,14 +367,45 @@ EOF
 }
 EOF
   log "✓ Created backup configuration"
+  
+  # Create MCP server wrapper script if using virtual environment
+  if [ -f "$CONFIG_DIR/activate_venv.sh" ]; then
+    cat > "$SCRIPTS_DIR/run_mcp_server.sh" << EOF
+#!/bin/bash
+source "$CONFIG_DIR/activate_venv.sh"
+python "$SCRIPTS_DIR/mcp-server.py" "\$@"
+EOF
+    chmod +x "$SCRIPTS_DIR/run_mcp_server.sh"
+    log "✓ Created MCP server wrapper script for virtual environment"
+  fi
 }
 
 # Configure Neovim
 configure_neovim() {
   section_header "Configuring Neovim"
   
-  # Create or update init.vim if it doesn't exist
-  if [ ! -f "$NVIM_CONFIG_DIR/init.vim" ]; then
+  # Look for Neovim templates
+  local neovim_templates_dir=""
+  local possible_dirs=(
+    "$REPO_DIR/neovim-templates"
+    "$REPO_DIR/config/nvim"
+  )
+  
+  for dir in "${possible_dirs[@]}"; do
+    if [ -d "$dir" ]; then
+      neovim_templates_dir="$dir"
+      break
+    fi
+  done
+  
+  # Create or update init.vim
+  if [ -n "$neovim_templates_dir" ] && [ -f "$neovim_templates_dir/init.vim" ]; then
+    # Copy the template init.vim
+    mkdir -p "$NVIM_CONFIG_DIR"
+    cp "$neovim_templates_dir/init.vim" "$NVIM_CONFIG_DIR/init.vim"
+    log "✓ Installed init.vim from template"
+  elif [ ! -f "$NVIM_CONFIG_DIR/init.vim" ]; then
+    # Create a basic init.vim if no template exists
     cat > "$NVIM_CONFIG_DIR/init.vim" << EOF
 " TheArchHive Neovim Configuration
 " Basic settings
@@ -371,7 +444,7 @@ nnoremap <leader>so :source ~/.config/nvim/init.vim<CR>
 " Lua configuration
 lua require('claude').setup()
 EOF
-    log "✓ Created init.vim"
+    log "✓ Created default init.vim"
   else
     # Check if Claude setup is in init.vim
     if ! grep -q "require('claude').setup()" "$NVIM_CONFIG_DIR/init.vim"; then
@@ -382,11 +455,35 @@ EOF
     fi
   fi
   
+  # Copy Lua modules from templates if available
+  if [ -n "$neovim_templates_dir" ] && [ -d "$neovim_templates_dir/lua" ]; then
+    mkdir -p "$NVIM_CONFIG_DIR/lua"
+    
+    # Copy all template Lua modules except claude directory
+    for item in "$neovim_templates_dir/lua"/*; do
+      if [ -d "$item" ] && [ "$(basename "$item")" != "claude" ]; then
+        cp -r "$item" "$NVIM_CONFIG_DIR/lua/"
+        log "✓ Installed Lua module: $(basename "$item")"
+      elif [ -f "$item" ]; then
+        cp "$item" "$NVIM_CONFIG_DIR/lua/"
+        log "✓ Installed Lua file: $(basename "$item")"
+      fi
+    done
+    
+    # Copy claude/json.lua if it exists
+    if [ -f "$neovim_templates_dir/lua/claude/json.lua" ]; then
+      mkdir -p "$NVIM_CONFIG_DIR/lua/claude"
+      cp "$neovim_templates_dir/lua/claude/json.lua" "$NVIM_CONFIG_DIR/lua/claude/json.lua"
+      log "✓ Installed claude/json.lua from template"
+    fi
+  fi
+  
   # Install Claude Lua module
   mkdir -p "$NVIM_CONFIG_DIR/lua/claude"
   
-  # Create Claude configuration module
-  cat > "$NVIM_CONFIG_DIR/lua/claude/config.lua" << EOF
+  # Create Claude configuration module if it doesn't exist
+  if [ ! -f "$NVIM_CONFIG_DIR/lua/claude/config.lua" ]; then
+    cat > "$NVIM_CONFIG_DIR/lua/claude/config.lua" << EOF
 local M = {}
 
 function M.load_claude_config()
@@ -416,9 +513,10 @@ end
 
 return M
 EOF
-  log "✓ Created Claude configuration module"
+    log "✓ Created Claude configuration module"
+  fi
   
-  # Create JSON parser module if it doesn't exist
+  # Create JSON parser module if needed
   if [ ! -f "$NVIM_CONFIG_DIR/lua/claude/json.lua" ]; then
     cat > "$NVIM_CONFIG_DIR/lua/claude/json.lua" << EOF
 local json = {}
@@ -448,14 +546,12 @@ EOF
     log "✓ Created JSON parser module"
   fi
   
-  # Create Claude main module
   # Locate the Claude integration implementation
   CLAUDE_INTEGRATION_PATH=""
   POSSIBLE_PATHS=(
     "$REPO_DIR/claude-mcp-integration.lua"
     "$REPO_DIR/scripts/claude-mcp-integration.lua"
-    "$REPO_DIR/lua/claude/init.lua"
-    "$REPO_DIR/claude/init.lua"
+    "$neovim_templates_dir/lua/claude/init.lua"
   )
   
   for path in "${POSSIBLE_PATHS[@]}"; do
@@ -494,6 +590,7 @@ EOF
     cat "$CLAUDE_INTEGRATION_PATH" > "$NVIM_CONFIG_DIR/lua/claude/init.lua"
     log "✓ Installed Claude Neovim integration from $CLAUDE_INTEGRATION_PATH"
   fi
+  
   # Create plenary dependency if needed
   if [ ! -d "$NVIM_CONFIG_DIR/pack/plugins/start/plenary.nvim" ]; then
     mkdir -p "$NVIM_CONFIG_DIR/pack/plugins/start"
@@ -545,6 +642,12 @@ create_systemd_service() {
   local systemd_dir="$HOME/.config/systemd/user"
   mkdir -p "$systemd_dir"
   
+  # Determine which executable to use
+  local mcp_exec="$SCRIPTS_DIR/mcp-server.py"
+  if [ -f "$SCRIPTS_DIR/run_mcp_server.sh" ]; then
+    mcp_exec="$SCRIPTS_DIR/run_mcp_server.sh"
+  fi
+  
   # Create service file
   cat > "$systemd_dir/thearchhive-mcp.service" << EOF
 [Unit]
@@ -552,7 +655,7 @@ Description=TheArchHive MCP Server
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python $SCRIPTS_DIR/mcp-server.py
+ExecStart=$mcp_exec
 Restart=on-failure
 RestartSec=5s
 Environment=PYTHONUNBUFFERED=1
@@ -629,9 +732,16 @@ display_summary() {
   echo "  ✓ MCP Server"
   echo "  ✓ Claude Neovim Integration"
   echo "  ✓ ClaudeScript Implementation"
+  echo "  ✓ Standard Operating Tools"
   echo "  ✓ Backup System"
   echo "  ✓ System Snapshot Tool"
   echo
+  if [ -f "$CONFIG_DIR/activate_venv.sh" ]; then
+    echo "Python modules installed in virtual environment:"
+    echo "  Location: $VENV_DIR"
+    echo "  Activation script: $CONFIG_DIR/activate_venv.sh"
+    echo
+  fi
   echo "Next steps:"
   echo "  1. Start Neovim and run :Claude to open the Claude interface"
   echo "  2. Ask Claude to suggest configurations for your system"

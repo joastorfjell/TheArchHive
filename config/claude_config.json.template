@@ -1,0 +1,7 @@
+{
+  "claude_api_key": "YOUR_API_KEY_HERE",
+  "claude_model": "claude-3-5-sonnet-20240229",
+  "max_tokens": 4096,
+  "history_size": 10,
+  "mcp_url": "http://127.0.0.1:5678"
+}

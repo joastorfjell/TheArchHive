@@ -1,0 +1,6 @@
+{
+  "port": 5678,
+  "snapshot_dir": "~/.local/share/thearchhive/snapshots",
+  "enable_command_execution": false,
+  "safe_commands": ["pacman -Qi", "uname", "df", "free", "cat /proc/cpuinfo", "lspci"]
+}

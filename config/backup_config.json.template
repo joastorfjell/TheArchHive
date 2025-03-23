@@ -1,0 +1,13 @@
+{
+  "backup_repo": "~/.local/share/thearchhive/backups",
+  "git_remote": "",
+  "config_files": [
+    "~/.config/nvim/init.vim",
+    "~/.config/nvim/lua/claude",
+    "~/.config/thearchhive",
+    "~/.bashrc",
+    "~/.zshrc",
+    "~/.xinitrc",
+    "~/.Xresources"
+  ]
+}
