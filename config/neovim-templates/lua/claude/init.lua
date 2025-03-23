@@ -985,7 +985,7 @@ function M.init()
   end
   
   -- Get buffer and window from result
-  local buf, win = result[1], result[2]  
+  local buf, win = init_window()  
   
   -- Initial message
   local welcome_msg = [[
