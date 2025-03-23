@@ -25,6 +25,97 @@ MCP_PORT=5678
 NVIM_CONFIG_DIR="$HOME/.config/nvim"
 CLAUDESCRIPT_PATH="$SCRIPTS_DIR/claudescript.py"
 
+install_python_modules() {
+    local modules=("$@")
+    
+    # First try with regular pip
+    echo "Attempting to install Python modules with pip..."
+    if pip install --user "${modules[@]}" 2>/dev/null; then
+        echo "Successfully installed modules with pip"
+        return 0
+    fi
+    
+    # If that fails, try with pip3
+    echo "Attempting to install Python modules with pip3..."
+    if pip3 install --user "${modules[@]}" 2>/dev/null; then
+        echo "Successfully installed modules with pip3"
+        return 0
+    fi
+    
+    # Check if we're running in an externally managed environment
+    if pip --version 2>/dev/null | grep -q "externally-managed-environment" || 
+       pip3 --version 2>/dev/null | grep -q "externally-managed-environment"; then
+        echo "Detected externally managed Python environment"
+        
+        # Try package manager first
+        echo "Attempting to install modules via package manager..."
+        local pkg_prefixes=("python-" "python3-")
+        local pkg_names=()
+        
+        for module in "${modules[@]}"; do
+            for prefix in "${pkg_prefixes[@]}"; do
+                pkg_names+=("$prefix$module")
+            done
+        done
+        
+        if sudo pacman -S --needed "${pkg_names[@]}" 2>/dev/null; then
+            echo "Successfully installed modules via package manager"
+            return 0
+        fi
+        
+        # Try virtual environment approach
+        echo "Installing modules in a virtual environment..."
+        
+        # Check if venv module is available
+        if python -m venv --help >/dev/null 2>&1; then
+            local venv_dir="$HOME/.local/share/thearchhive/venv"
+            mkdir -p "$(dirname "$venv_dir")"
+            
+            # Create virtual environment
+            python -m venv "$venv_dir"
+            
+            # Activate and install
+            source "$venv_dir/bin/activate"
+            pip install "${modules[@]}"
+            deactivate
+            
+            # Add activation to configuration
+            local config_dir="$HOME/.config/thearchhive"
+            mkdir -p "$config_dir"
+            echo "source $venv_dir/bin/activate" > "$config_dir/activate_venv.sh"
+            chmod +x "$config_dir/activate_venv.sh"
+            
+            # Create wrapper script for MCP server
+            local scripts_dir="$config_dir/scripts"
+            mkdir -p "$scripts_dir"
+            
+            cat > "$scripts_dir/run_mcp_server.sh" << 'EOF'
+#!/bin/bash
+source "$HOME/.config/thearchhive/activate_venv.sh"
+python "$HOME/.config/thearchhive/scripts/mcp-server.py" "$@"
+EOF
+            chmod +x "$scripts_dir/run_mcp_server.sh"
+            
+            # Update systemd service to use wrapper
+            local systemd_dir="$HOME/.config/systemd/user"
+            if [ -f "$systemd_dir/thearchhive-mcp.service" ]; then
+                sed -i 's|ExecStart=/usr/bin/python.*|ExecStart='"$scripts_dir"'/run_mcp_server.sh|' "$systemd_dir/thearchhive-mcp.service"
+                systemctl --user daemon-reload
+            fi
+            
+            echo "Successfully installed modules in virtual environment"
+            echo "Use $config_dir/activate_venv.sh to activate the environment when needed"
+            return 0
+        else
+            echo "Python venv module not available. Please install python-venv package"
+            return 1
+        fi
+    fi
+    
+    echo "Failed to install Python modules"
+    return 1
+}
+
 # Log function
 log() {
   echo -e "${BLUE}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1"
@@ -82,28 +173,16 @@ check_requirements() {
   fi
   
   # Check for Python modules
-  local python_modules=("flask" "psutil")
-  local missing_modules=()
-  
-  for module in "${python_modules[@]}"; do
-    if python -c "import $module" 2>/dev/null; then
-      log "✓ Found Python module $module"
-    else
-      log "${RED}✗ Missing Python module $module${NC}"
-      missing_modules+=("$module")
-    fi
-  done
-  
   if [ ${#missing_modules[@]} -gt 0 ]; then
-    echo -e "${YELLOW}Missing required Python modules. Install them with:${NC}"
-    echo -e "pip install ${missing_modules[*]}"
-    
-    prompt "Install missing Python modules now? (y/n)" INSTALL_MODULES
-    if [[ "$INSTALL_MODULES" =~ ^[Yy]$ ]]; then
-      pip install "${missing_modules[@]}"
-    else
-      echo -e "${YELLOW}Continuing installation without required Python modules. Some features may not work.${NC}"
-    fi
+  	echo -e "${YELLOW}Missing required Python modules. Install them with:${NC}"
+  	echo -e "pip install ${missing_modules[*]}"
+  
+  	prompt "Install missing Python modules now? (y/n)" INSTALL_MODULES
+  	if [[ "$INSTALL_MODULES" =~ ^[Yy]$ ]]; then
+    		install_python_modules "${missing_modules[@]}"
+  	else
+    		echo -e "${YELLOW}Continuing installation without required Python modules. Some features may not work.${NC}"
+  	fi
   fi
 }
 
