@@ -1,49 +1,7 @@
--- Add this debugging function to your claude/init.lua file
--- Place it near the top of the file
-
-function M.debug_config()
-  -- Print information about config paths and loading
-  local config_module = safe_require('claude.config')
-  print("Config module loaded:", config_module ~= nil)
-  
-  if config_module then
-    print("Config path:", config_module.config_path)
-    print("API configured flag:", config_module.api_configured)
-    
-    -- Try to read the config file
-    local file = io.open(config_module.config_path, "r")
-    if file then
-      print("Config file exists and is readable")
-      local content = file:read("*all")
-      print("Config file content:", content)
-      file:close()
-      
-      -- Try to parse the JSON
-      local json = safe_require('json')
-      if json then
-        local ok, config = pcall(json.decode, content)
-        if ok then
-          print("JSON parsing succeeded")
-          print("API key present:", config.api_key ~= nil)
-        else
-          print("JSON parsing failed:", config)
-        end
-      else
-        print("JSON module not available")
-      end
-    else
-      print("Config file cannot be opened")
-    end
-  end
-end
-
--- Call this from your setup function to see the debug info when Neovim starts
--- Add to the end of M.setup() function:
--- M.debug_config()
-
 -- TheArchHive: Claude integration for Neovim
--- Fixed version that handles buffer and keymap errors
+-- Fixed version with proper module structure
 
+-- Define M at the very beginning
 local M = {}
 local api = vim.api
 local fn = vim.fn
@@ -64,7 +22,7 @@ local function safe_require(module)
     return result
 end
 
--- Update the load_config function in your init.lua with this improved version
+-- Load configuration
 local function load_config()
     -- First try to load the config module
     local ok, config_module = pcall(require, 'claude.config')
@@ -113,6 +71,43 @@ local function load_config()
     return config
 end
 
+-- Debug configuration loading
+function M.debug_config()
+    -- Print information about config paths and loading
+    local config_module = safe_require('claude.config')
+    print("Config module loaded:", config_module ~= nil)
+    
+    if config_module then
+        print("Config path:", config_module.config_path)
+        print("API configured flag:", config_module.api_configured)
+        
+        -- Try to read the config file
+        local file = io.open(config_module.config_path, "r")
+        if file then
+            print("Config file exists and is readable")
+            local content = file:read("*all")
+            print("Config file content:", content)
+            file:close()
+            
+            -- Try to parse the JSON
+            local json = safe_require('json')
+            if json then
+                local ok, config = pcall(json.decode, content)
+                if ok then
+                    print("JSON parsing succeeded")
+                    print("API key present:", config.api_key ~= nil)
+                else
+                    print("JSON parsing failed:", config)
+                end
+            else
+                print("JSON module not available")
+            end
+        else
+            print("Config file cannot be opened")
+        end
+    end
+end
+
 -- Initialize Claude window
 function M.init()
     if M.initialized then return end
@@ -136,13 +131,12 @@ function M.init()
     set_buf_option('swapfile', false)
     pcall(api.nvim_buf_set_name, M.buf, 'TheArchHive-Claude')
     
-    -- Initial greeting message
+    -- Initial greeting message using simple banner without escape characters
     local lines = {
-        "  _____ _           _            _     _   _ _           ",
-        " |_   _| |__   ___ / \\\\   _ __ __| |__ | | | |_|_   _____ ",
-        "   | | | '_ \\\\ / _ \\\\ \\\\ | | '__/ _` '_ \\\\| |_| | \\\\ \\\\ / / _ \\\\",
-        "   | | | | | |  __/ _ \\\\| | | (_| | | | |  _  | |\\\\  V /  __/",
-        "   |_| |_| |_|\\\\___|_/ \\\\_\\\\_|  \\\\__,_|_| |_|_| |_|_| \\\\_/ \\\\___|",
+        "+--------------------------------------+",
+        "|             TheArchHive             |",
+        "|      Claude AI Integration          |",
+        "+--------------------------------------+",
         "",
         "Welcome to TheArchHive Claude Integration!",
         "----------------------------------------",
@@ -405,6 +399,9 @@ end
 
 -- Initialize commands
 function M.setup()
+    -- Add the debug call at the beginning
+    -- M.debug_config()
+    
     -- Create user commands safely
     pcall(vim.cmd, [[
         command! ClaudeOpen lua require('claude').open()
