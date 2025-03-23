@@ -199,6 +199,37 @@ def installed_packages():
         logger.error(f"Error in installed_packages endpoint: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/system/windowmanager', methods=['GET'])
+def window_manager():
+    """Get information about the installed window manager"""
+    try:
+        logger.info("Retrieving window manager information")
+        
+        # Try multiple approaches to detect the window manager
+        wm_info = {"detected": False, "name": "Unknown", "status": "Unknown"}
+        
+        # Check for common WM and DE packages
+        wm_packages = ["hyprland", "sway", "i3", "xmonad", "dwm", "openbox", "bspwm", 
+                     "gnome-shell", "kwin", "xfwm4", "awesome", "qtile"]
+        
+        for wm in wm_packages:
+            result = run_command(f"pacman -Qi {wm} 2>/dev/null || true")
+            if result["success"] and "Name" in result["output"]:
+                wm_info["detected"] = True
+                wm_info["name"] = wm
+                wm_info["status"] = "Installed"
+                
+                # Check if it's running
+                result = run_command(f"pgrep {wm} 2>/dev/null || true")
+                if result["success"] and result["output"].strip():
+                    wm_info["status"] = "Running"
+                break
+        
+        return jsonify(wm_info)
+    except Exception as e:
+        logger.error(f"Error in window_manager endpoint: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/claudescript/encode', methods=['POST'])
 def claudescript_encode():
     """Encode data into ClaudeScript format"""
