@@ -1,7 +1,6 @@
 -- TheArchHive: Claude integration for Neovim
--- Fixed version with proper module structure
+-- Fixed version with proper API request format including max_tokens
 
--- Define M at the very beginning
 local M = {}
 local api = vim.api
 local fn = vim.fn
@@ -12,100 +11,31 @@ M.win = nil
 M.initialized = false
 M.history = {}
 
--- Safe require function to handle missing modules
-local function safe_require(module)
-    local ok, result = pcall(require, module)
-    if not ok then
-        print("Error loading module " .. module .. ": " .. result)
-        return nil
-    end
-    return result
-end
-
--- Load configuration
+-- Load configuration - simplified for reliability
 local function load_config()
-    -- First try to load the config module
-    local ok, config_module = pcall(require, 'claude.config')
-    if not ok then
-        print("Error loading claude.config module:", config_module)
-        return nil
-    end
+    local home = os.getenv("HOME")
+    local config_path = home .. "/.config/thearchhive/claude_config.json"
     
-    -- Check if config path is set
-    if not config_module.config_path then
-        print("No config path defined in claude.config")
-        return nil
-    end
-    
-    -- Try to open the config file
-    local file = io.open(config_module.config_path, "r")
+    local file = io.open(config_path, "r")
     if not file then
-        print("Could not open config file at:", config_module.config_path)
         return nil
     end
     
-    -- Read the file content
     local content = file:read("*all")
     file:close()
     
-    -- Try to load the JSON module
-    local ok, json = pcall(require, 'json')
-    if not ok then
-        print("Error loading JSON module:", json)
+    -- Simple pattern matching to extract API key
+    local api_key = content:match('"api_key"%s*:%s*"([^"]+)"')
+    if not api_key then
         return nil
     end
     
-    -- Try to parse the JSON
-    local ok, config = pcall(json.decode, content)
-    if not ok then
-        print("Error parsing JSON from config file:", config)
-        return nil
-    end
-    
-    -- Make sure the API key is present
-    if not config.api_key then
-        print("No API key found in config file")
-        return nil
-    end
-    
-    return config
-end
-
--- Debug configuration loading
-function M.debug_config()
-    -- Print information about config paths and loading
-    local config_module = safe_require('claude.config')
-    print("Config module loaded:", config_module ~= nil)
-    
-    if config_module then
-        print("Config path:", config_module.config_path)
-        print("API configured flag:", config_module.api_configured)
-        
-        -- Try to read the config file
-        local file = io.open(config_module.config_path, "r")
-        if file then
-            print("Config file exists and is readable")
-            local content = file:read("*all")
-            print("Config file content:", content)
-            file:close()
-            
-            -- Try to parse the JSON
-            local json = safe_require('json')
-            if json then
-                local ok, config = pcall(json.decode, content)
-                if ok then
-                    print("JSON parsing succeeded")
-                    print("API key present:", config.api_key ~= nil)
-                else
-                    print("JSON parsing failed:", config)
-                end
-            else
-                print("JSON module not available")
-            end
-        else
-            print("Config file cannot be opened")
-        end
-    end
+    return {
+        api_key = api_key,
+        model = content:match('"model"%s*:%s*"([^"]+)"') or "claude-3-5-sonnet-20240620",
+        max_tokens = 4000,
+        temperature = 0.7
+    }
 end
 
 -- Initialize Claude window
@@ -114,24 +44,12 @@ function M.init()
     
     -- Create buffer
     M.buf = api.nvim_create_buf(false, true)
+    api.nvim_buf_set_option(M.buf, 'buftype', 'nofile')
+    api.nvim_buf_set_option(M.buf, 'bufhidden', 'hide')
+    api.nvim_buf_set_option(M.buf, 'swapfile', false)
+    api.nvim_buf_set_name(M.buf, 'TheArchHive-Claude')
     
-    -- Safety check
-    if not M.buf or M.buf == 0 then
-        print("Error: Failed to create Claude buffer")
-        return
-    end
-    
-    -- Set buffer options safely
-    local function set_buf_option(name, value)
-        pcall(api.nvim_buf_set_option, M.buf, name, value)
-    end
-    
-    set_buf_option('buftype', 'nofile')
-    set_buf_option('bufhidden', 'hide')
-    set_buf_option('swapfile', false)
-    pcall(api.nvim_buf_set_name, M.buf, 'TheArchHive-Claude')
-    
-    -- Initial greeting message using simple banner without escape characters
+    -- Initial greeting message
     local lines = {
         "+--------------------------------------+",
         "|             TheArchHive             |",
@@ -146,9 +64,6 @@ function M.init()
         "",
     }
     
-    -- Safely set buffer lines
-    pcall(api.nvim_buf_set_lines, M.buf, 0, -1, false, lines)
-    
     -- Check if config is available
     local config = load_config()
     if not config or not config.api_key then
@@ -159,8 +74,8 @@ function M.init()
         table.insert(lines, "Type your question and press <Enter> to send.")
     end
     
-    -- Update buffer with additional lines
-    pcall(api.nvim_buf_set_lines, M.buf, 0, -1, false, lines)
+    -- Set buffer lines
+    api.nvim_buf_set_lines(M.buf, 0, -1, false, lines)
     
     M.initialized = true
 end
@@ -169,16 +84,6 @@ end
 function M.open()
     if not M.initialized then
         M.init()
-    end
-    
-    -- Safety check
-    if not M.buf or not api.nvim_buf_is_valid(M.buf) then
-        print("Error: Claude buffer is not valid")
-        M.initialized = false
-        M.init()
-        if not M.initialized then
-            return
-        end
     end
     
     local width = math.floor(vim.o.columns * 0.8)
@@ -197,63 +102,43 @@ function M.open()
         border = 'rounded'
     }
     
-    -- Create window safely
-    local ok, win = pcall(api.nvim_open_win, M.buf, true, opts)
-    if not ok or not win then
-        print("Error opening Claude window: " .. (win or "unknown error"))
-        return
-    end
+    -- Create window
+    M.win = api.nvim_open_win(M.buf, true, opts)
     
-    M.win = win
+    -- Set window options
+    api.nvim_win_set_option(M.win, 'wrap', true)
+    api.nvim_win_set_option(M.win, 'cursorline', true)
     
-    -- Set window options safely
-    pcall(api.nvim_win_set_option, M.win, 'wrap', true)
-    pcall(api.nvim_win_set_option, M.win, 'cursorline', true)
-    
-    -- Set key mappings safely
-    local function safe_keymap(mode, lhs, rhs, opts)
-        pcall(api.nvim_buf_set_keymap, M.buf, mode, lhs, rhs, opts or {})
-    end
-    
-    -- Close window with q
-    safe_keymap('n', 'q', ':lua require("claude").close()<CR>', 
-                {noremap = true, silent = true})
-    
-    -- Submit question with <Enter> in normal mode
-    safe_keymap('n', '<CR>', ':lua require("claude").ask_question()<CR>', 
-                {noremap = true, silent = true})
+    -- Set key mappings
+    api.nvim_buf_set_keymap(M.buf, 'n', 'q', ':lua require("claude").close()<CR>', 
+                          {noremap = true, silent = true})
+    api.nvim_buf_set_keymap(M.buf, 'n', '<CR>', ':lua require("claude").ask_question()<CR>', 
+                          {noremap = true, silent = true})
     
     -- Add input line if not already present
     local line_count = api.nvim_buf_line_count(M.buf)
     local last_line = api.nvim_buf_get_lines(M.buf, line_count - 1, line_count, false)[1] or ""
     
     if last_line ~= "> " then
-        pcall(api.nvim_buf_set_lines, M.buf, line_count, line_count, false, {"", "> "})
+        api.nvim_buf_set_lines(M.buf, line_count, line_count, false, {"", "> "})
     end
     
-    -- Try to move cursor to input line and enter insert mode
-    pcall(function()
-        local new_line_count = api.nvim_buf_line_count(M.buf)
-        api.nvim_win_set_cursor(M.win, {new_line_count, 2})
-        vim.cmd('startinsert!')
-    end)
+    -- Move cursor to input line and enter insert mode
+    local new_line_count = api.nvim_buf_line_count(M.buf)
+    api.nvim_win_set_cursor(M.win, {new_line_count, 2})
+    vim.cmd('startinsert!')
 end
 
 -- Close Claude window
 function M.close()
     if M.win and api.nvim_win_is_valid(M.win) then
-        pcall(api.nvim_win_close, M.win, true)
+        api.nvim_win_close(M.win, true)
     end
     M.win = nil
 end
 
 -- Call Claude API
 function M.call_claude_api(prompt)
-    local json = safe_require('json')
-    if not json then
-        return "Error: JSON module not found. Please check your installation."
-    end
-    
     local config = load_config()
     if not config or not config.api_key then
         return "Error: Claude API is not configured. Run './scripts/setup-claude.sh' to set up your API key."
@@ -273,13 +158,20 @@ function M.call_claude_api(prompt)
         table.insert(messages, M.history[i])
     end
     
-    -- Convert to JSON
-    local json_data = json.encode({
-        model = config.model or "claude-3-5-sonnet-20240620",
-        max_tokens = config.max_tokens or 4000,
-        temperature = config.temperature or 0.7,
-        messages = messages
-    })
+    -- Convert messages to JSON format manually
+    local messages_json = "["
+    for i, msg in ipairs(messages) do
+        if i > 1 then messages_json = messages_json .. "," end
+        messages_json = messages_json .. '{"role":"' .. msg.role .. '","content":"' 
+                      .. msg.content:gsub('"', '\\"'):gsub('\n', '\\n') .. '"}'
+    end
+    messages_json = messages_json .. "]"
+    
+    -- Build JSON data with max_tokens parameter included
+    local json_data = '{"model":"' .. config.model 
+                    .. '","max_tokens":' .. config.max_tokens
+                    .. ',"temperature":' .. config.temperature
+                    .. ',"messages":' .. messages_json .. '}'
     
     -- Build curl command
     local cmd = string.format(
@@ -304,12 +196,14 @@ function M.call_claude_api(prompt)
     
     -- Handle response
     if http_code == "200" then
-        local ok, response = pcall(json.decode, response_text)
-        if ok and response.content and response.content[1] and response.content[1].text then
-            local reply = response.content[1].text
+        -- Extract the text content using pattern matching
+        local text = response_text:match('"text":"([^"]*)"')
+        if text then
+            -- Unescape the text
+            text = text:gsub('\\"', '"'):gsub('\\\\', '\\'):gsub('\\n', '\n')
             -- Add to history
-            table.insert(M.history, {role = "assistant", content = reply})
-            return reply
+            table.insert(M.history, {role = "assistant", content = text})
+            return text
         else
             return "Error parsing API response: " .. response_text
         end
@@ -320,12 +214,6 @@ end
 
 -- Process user question
 function M.ask_question()
-    -- Safety check
-    if not M.buf or not api.nvim_buf_is_valid(M.buf) then
-        print("Error: Claude buffer is not valid")
-        return
-    end
-    
     -- Get the last line from the buffer (user input)
     local line_count = api.nvim_buf_line_count(M.buf)
     local last_line = api.nvim_buf_get_lines(M.buf, line_count - 1, line_count, false)[1] or ""
@@ -339,21 +227,15 @@ function M.ask_question()
     end
     
     -- Replace the input line with the question (without the prompt)
-    pcall(api.nvim_buf_set_lines, M.buf, line_count - 1, line_count, false, {question})
+    api.nvim_buf_set_lines(M.buf, line_count - 1, line_count, false, {question})
     
     -- Add "Thinking..." message
-    pcall(api.nvim_buf_set_lines, M.buf, line_count, line_count, false, {"", "Claude is thinking..."})
+    api.nvim_buf_set_lines(M.buf, line_count, line_count, false, {"", "Claude is thinking..."})
     
     -- Process in background to avoid blocking UI
     vim.defer_fn(function()
         -- Call Claude API
         local response = M.call_claude_api(question)
-        
-        -- Safety check
-        if not M.buf or not api.nvim_buf_is_valid(M.buf) then
-            print("Error: Claude buffer was closed during API call")
-            return
-        end
         
         -- Get current line count (it might have changed)
         local current_line_count = api.nvim_buf_line_count(M.buf)
@@ -370,7 +252,7 @@ function M.ask_question()
         
         -- Remove "Thinking..." message if found
         if thinking_line >= 0 then
-            pcall(api.nvim_buf_set_lines, M.buf, thinking_line - 1, thinking_line + 1, false, {})
+            api.nvim_buf_set_lines(M.buf, thinking_line - 1, thinking_line + 1, false, {})
         end
         
         -- Format and add the response
@@ -381,39 +263,32 @@ function M.ask_question()
         table.insert(formatted_response, "")
         
         -- Add response to buffer
-        pcall(api.nvim_buf_set_lines, M.buf, current_line_count, current_line_count, false, formatted_response)
+        api.nvim_buf_set_lines(M.buf, current_line_count, current_line_count, false, formatted_response)
         
         -- Add new input line
-        pcall(api.nvim_buf_set_lines, M.buf, -1, -1, false, {"> "})
+        api.nvim_buf_set_lines(M.buf, -1, -1, false, {"> "})
         
         -- Move cursor to input line and enter insert mode
         if M.win and api.nvim_win_is_valid(M.win) then
-            pcall(function()
-                local new_line_count = api.nvim_buf_line_count(M.buf)
-                api.nvim_win_set_cursor(M.win, {new_line_count, 2})
-                vim.cmd('startinsert!')
-            end)
+            local new_line_count = api.nvim_buf_line_count(M.buf)
+            api.nvim_win_set_cursor(M.win, {new_line_count, 2})
+            vim.cmd('startinsert!')
         end
     end, 100)
 end
 
 -- Initialize commands
 function M.setup()
-    -- Add the debug call at the beginning
-    -- M.debug_config()
-    
-    -- Create user commands safely
-    pcall(vim.cmd, [[
+    vim.cmd [[
         command! ClaudeOpen lua require('claude').open()
         command! ClaudeClose lua require('claude').close()
         command! ClaudeAsk lua require('claude').ask_question()
-    ]])
+    ]]
     
-    -- Set up key mappings safely
-    pcall(vim.api.nvim_set_keymap, 'n', '<Space>cc', ':ClaudeOpen<CR>', 
-          {noremap = true, silent = true})
-    pcall(vim.api.nvim_set_keymap, 'n', '<Space>ca', ':ClaudeAsk<CR>', 
-          {noremap = true, silent = true})
+    vim.api.nvim_set_keymap('n', '<Space>cc', ':ClaudeOpen<CR>', 
+                          {noremap = true, silent = true})
+    vim.api.nvim_set_keymap('n', '<Space>ca', ':ClaudeAsk<CR>', 
+                          {noremap = true, silent = true})
 end
 
 return M
