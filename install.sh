@@ -204,20 +204,98 @@ create_directories() {
 install_scripts() {
   section_header "Installing Scripts"
   
-  # Copy MCP server
-  cat "$REPO_DIR/mcp-server.py" > "$SCRIPTS_DIR/mcp-server.py"
+  # Locate the MCP server
+  MCP_SERVER_PATH=""
+  POSSIBLE_PATHS=(
+    "$REPO_DIR/mcp-server.py"
+    "$REPO_DIR/scripts/mcp-server.py"
+    "$REPO_DIR/src/mcp-server.py"
+  )
+  
+  for path in "${POSSIBLE_PATHS[@]}"; do
+    if [ -f "$path" ]; then
+      MCP_SERVER_PATH="$path"
+      break
+    fi
+  done
+  
+  if [ -z "$MCP_SERVER_PATH" ]; then
+    log "${YELLOW}Warning: MCP server script not found. Creating a placeholder.${NC}"
+    # Create a basic placeholder that will show an error if run
+    cat > "$SCRIPTS_DIR/mcp-server.py" << EOF
+#!/usr/bin/env python3
+print("Error: This is a placeholder MCP server. The actual script was not found during installation.")
+print("Please create a proper MCP server implementation.")
+exit(1)
+EOF
+  else
+    # Copy MCP server
+    cat "$MCP_SERVER_PATH" > "$SCRIPTS_DIR/mcp-server.py"
+    log "✓ Installed MCP server from $MCP_SERVER_PATH"
+  fi
   chmod +x "$SCRIPTS_DIR/mcp-server.py"
-  log "✓ Installed MCP server"
   
-  # Copy backup script
-  cat "$REPO_DIR/backup.sh" > "$SCRIPTS_DIR/backup.sh"
-  chmod +x "$SCRIPTS_DIR/backup.sh"
-  log "✓ Installed backup script"
+  # Locate the ClaudeScript implementation
+  CLAUDESCRIPT_SRC_PATH=""
+  POSSIBLE_PATHS=(
+    "$REPO_DIR/claudescript.py"
+    "$REPO_DIR/scripts/claudescript.py"
+    "$REPO_DIR/ClaudeScript.py"
+    "$REPO_DIR/scripts/ClaudeScript.py"
+  )
   
-  # Copy ClaudeScript implementation
-  cat "$REPO_DIR/claudescript.py" > "$CLAUDESCRIPT_PATH"
+  for path in "${POSSIBLE_PATHS[@]}"; do
+    if [ -f "$path" ]; then
+      CLAUDESCRIPT_SRC_PATH="$path"
+      break
+    fi
+  done
+  
+  if [ -z "$CLAUDESCRIPT_SRC_PATH" ]; then
+    log "${YELLOW}Warning: ClaudeScript implementation not found. Creating a placeholder.${NC}"
+    # Create a basic placeholder
+    cat > "$CLAUDESCRIPT_PATH" << EOF
+#!/usr/bin/env python3
+print("Error: This is a placeholder ClaudeScript implementation. The actual script was not found during installation.")
+print("Please create a proper ClaudeScript implementation.")
+exit(1)
+EOF
+  else
+    # Copy ClaudeScript implementation
+    cat "$CLAUDESCRIPT_SRC_PATH" > "$CLAUDESCRIPT_PATH"
+    log "✓ Installed ClaudeScript implementation from $CLAUDESCRIPT_SRC_PATH"
+  fi
   chmod +x "$CLAUDESCRIPT_PATH"
-  log "✓ Installed ClaudeScript implementation"
+  
+  # Similar process for backup script
+  BACKUP_SCRIPT_PATH=""
+  POSSIBLE_PATHS=(
+    "$REPO_DIR/backup.sh"
+    "$REPO_DIR/scripts/backup.sh"
+  )
+  
+  for path in "${POSSIBLE_PATHS[@]}"; do
+    if [ -f "$path" ]; then
+      BACKUP_SCRIPT_PATH="$path"
+      break
+    fi
+  done
+  
+  if [ -z "$BACKUP_SCRIPT_PATH" ]; then
+    log "${YELLOW}Warning: Backup script not found. Creating a placeholder.${NC}"
+    # Create a basic placeholder
+    cat > "$SCRIPTS_DIR/backup.sh" << EOF
+#!/bin/bash
+echo "Error: This is a placeholder backup script. The actual script was not found during installation."
+echo "Please create a proper backup script implementation."
+exit 1
+EOF
+  else
+    # Copy backup script
+    cat "$BACKUP_SCRIPT_PATH" > "$SCRIPTS_DIR/backup.sh"
+    log "✓ Installed backup script from $BACKUP_SCRIPT_PATH"
+  fi
+  chmod +x "$SCRIPTS_DIR/backup.sh"
   
   # Create MCP configuration
   cat > "$CONFIG_DIR/mcp_config.json" << EOF
@@ -371,9 +449,51 @@ EOF
   fi
   
   # Create Claude main module
-  cat "$REPO_DIR/claude-mcp-integration.lua" > "$NVIM_CONFIG_DIR/lua/claude/init.lua"
-  log "✓ Installed Claude Neovim integration"
+  # Locate the Claude integration implementation
+  CLAUDE_INTEGRATION_PATH=""
+  POSSIBLE_PATHS=(
+    "$REPO_DIR/claude-mcp-integration.lua"
+    "$REPO_DIR/scripts/claude-mcp-integration.lua"
+    "$REPO_DIR/lua/claude/init.lua"
+    "$REPO_DIR/claude/init.lua"
+  )
   
+  for path in "${POSSIBLE_PATHS[@]}"; do
+    if [ -f "$path" ]; then
+      CLAUDE_INTEGRATION_PATH="$path"
+      break
+    fi
+  done
+  
+  if [ -z "$CLAUDE_INTEGRATION_PATH" ]; then
+    log "${YELLOW}Warning: Claude Neovim integration not found. Creating a placeholder.${NC}"
+    # Create a basic placeholder
+    cat > "$NVIM_CONFIG_DIR/lua/claude/init.lua" << EOF
+-- Placeholder Claude integration module
+local M = {}
+
+function M.setup()
+  vim.api.nvim_create_user_command('Claude', function()
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+      "Claude Integration Error",
+      "",
+      "This is a placeholder Claude integration module.",
+      "The actual implementation was not found during installation.",
+      "",
+      "Please install the proper Claude integration implementation."
+    })
+    vim.api.nvim_set_current_buf(buf)
+  end, {})
+end
+
+return M
+EOF
+  else
+    # Copy Claude Neovim integration
+    cat "$CLAUDE_INTEGRATION_PATH" > "$NVIM_CONFIG_DIR/lua/claude/init.lua"
+    log "✓ Installed Claude Neovim integration from $CLAUDE_INTEGRATION_PATH"
+  fi
   # Create plenary dependency if needed
   if [ ! -d "$NVIM_CONFIG_DIR/pack/plugins/start/plenary.nvim" ]; then
     mkdir -p "$NVIM_CONFIG_DIR/pack/plugins/start"
