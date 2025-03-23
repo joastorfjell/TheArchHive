@@ -18,13 +18,113 @@ local default_config = {
 -- Keep track of processed scripts to avoid duplicates
 M.processed_scripts = {}
 
+-- Simple hash function for script tracking
+function M.simple_hash(str)
+  local hash = 0
+  for i = 1, #str do
+    hash = ((hash * 31) + string.byte(str, i)) % 2147483647
+  end
+  return tostring(hash)
+end
+
 -- Initialize configuration
 local function init_config()
   M.config = vim.tbl_deep_extend("force", default_config, config.load_claude_config() or {})
   return M.config
 end
 
--- Initialize Claude window
+-- Initialize Claude
+function M.init()
+  -- Load configuration
+  init_config()
+  
+  -- Create buffer and window with error handling
+  local ok, result = pcall(init_window)
+  if not ok then
+    print("Error initializing Claude window: " .. tostring(result))
+    return nil, nil
+  end
+  
+  -- When pcall succeeds with a function that returns multiple values,
+  -- it wraps them in a single return value. We need to call init_window directly.
+  local buf, win = init_window()
+  
+  -- Initial message
+  local welcome_msg = [[
+   ████████ ██   ██ ███████      █████  ██████   ██████ ██   ██     ██   ██ ██ ██    ██ ███████ 
+      ██    ██   ██ ██          ██   ██ ██   ██ ██      ██   ██     ██   ██ ██ ██    ██ ██      
+      ██    ███████ █████       ███████ ██████  ██      ███████     ███████ ██ ██    ██ █████   
+      ██    ██   ██ ██          ██   ██ ██   ██ ██      ██   ██     ██   ██ ██  ██  ██  ██      
+      ██    ██   ██ ███████     ██   ██ ██   ██  ██████ ██   ██     ██   ██ ██   ████   ███████ 
+                                                                                                
+  Welcome to TheArchHive with Claude integration!
+  I'm ready to help you optimize your Arch Linux system.
+  
+  Press <Space>ca to ask a question or type any message below:
+  ]]
+  
+  M.display_message(buf, welcome_msg)
+  
+  -- Set up keymaps - safer approach
+  if buf and win then
+    local keymap_ok, keymap_err = pcall(function()
+      vim.api.nvim_buf_set_keymap(buf, 'n', '<Space>ca', 
+        string.format([[<Cmd>lua require('claude').handle_input(%d, %d)<CR>]], buf, win), 
+        {noremap = true, silent = true})
+    end)
+    
+    if not keymap_ok then
+      print("Error setting up keymaps: " .. tostring(keymap_err))
+    end
+  else
+    print("Error: Invalid buffer or window")
+  end
+  
+  return buf, win
+end
+
+-- Set up commands
+function M.setup()
+  vim.api.nvim_create_user_command('Claude', function()
+    local ok, result = pcall(M.init)
+    if not ok then
+      print("Error running Claude: " .. tostring(result))
+    end
+  end, {})
+  
+  vim.api.nvim_create_user_command('ClaudeSnapshot', function()
+    local ok, result_or_err = pcall(function()
+      local snapshot, err = M.create_snapshot()
+      if snapshot then
+        print("Snapshot created: " .. (snapshot.snapshot_path or "unknown path"))
+      else
+        print("Failed to create snapshot: " .. (err or "Unknown error"))
+      end
+    end)
+    
+    if not ok then
+      print("Error creating snapshot: " .. tostring(result_or_err))
+    end
+  end, {})
+  
+  -- Add script extraction command
+  vim.api.nvim_create_user_command('ClaudeExtractScript', function()
+    local buf = vim.api.nvim_get_current_buf()
+    M.offer_script_execution(buf)
+  end, {})
+  
+  -- Add command to attach to tmux session
+  vim.api.nvim_create_user_command('ClaudeTmux', function()
+    M.attach_to_tmux_session('claude-script')
+  end, {})
+  
+  -- Set up key bindings
+  vim.api.nvim_set_keymap('n', '<Space>cc', '<Cmd>Claude<CR>', {noremap = true, silent = true})
+  vim.api.nvim_set_keymap('n', '<Space>cs', '<Cmd>ClaudeExtractScript<CR>', {noremap = true, silent = true})
+  vim.api.nvim_set_keymap('n', '<Space>ta', '<Cmd>ClaudeTmux<CR>', {noremap = true, silent = true})
+end
+
+return M window
 local function init_window()
   local win_width = math.floor(vim.o.columns * 0.8)
   local win_height = math.floor(vim.o.lines * 0.8)
@@ -172,6 +272,7 @@ function M.fetch_window_manager_info()
   )
   
   if err or not response or response.status ~= 200 then
+    -- Window manager endpoint might not exist yet
     return nil, "Failed to fetch window manager info: " .. (err or (response and response.body or "Unknown error"))
   end
   
@@ -271,11 +372,9 @@ function M.generate_system_context()
     context = context .. "\nTotal installed packages: " .. #packages.packages .. "\n"
   end
   
-  -- Add window manager information
+  -- Add window manager information if available
   if wm_info and wm_info.detected then
     context = context .. "\nWindow Manager: " .. wm_info.name .. " (" .. wm_info.status .. ")\n"
-  else
-    context = context .. "\nNo window manager detected.\n"
   end
   
   context = context .. "\nYou can provide suggestions for system optimization, help with configuration, "
