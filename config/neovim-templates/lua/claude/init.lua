@@ -198,30 +198,44 @@ end
 -- Function to send message to Claude API
 function M.send_message(user_message, display_callback, buf)
   local conf = M.config or init_config()
-  
+
   -- Generate system context
   local system_context = M.generate_system_context()
-  
+
   -- Initialize conversation history if not exists
   if not M.conversation_history then
     M.conversation_history = {}
   end
-  
-  -- Format messages
-  local messages = format_message(system_context, user_message, M.conversation_history)
-  
-  -- Build request body
+
+  -- Format messages - We need to separate system message from regular messages
+  local messages = {}
+
+  -- Add conversation history
+  if M.conversation_history then
+    for _, msg in ipairs(M.conversation_history) do
+      table.insert(messages, msg)
+    end
+  end
+
+  -- Add the current user message
+  table.insert(messages, {
+    role = "user",
+    content = user_message
+  })
+
+  -- Build request body - Note that system message is a top-level parameter, not part of messages array
   local request_body = json.encode({
     model = conf.claude_model,
     max_tokens = conf.max_tokens,
-    messages = messages
+    system = system_context, -- System message goes here as a top-level parameter
+    messages = messages     -- Regular conversation messages here
   })
-  
+
   -- Display thinking message
   if display_callback then
     display_callback(buf, "Thinking...")
   end
-  
+
   -- Make API request
   local response = curl.post({
     url = "https://api.anthropic.com/v1/messages",
@@ -232,7 +246,7 @@ function M.send_message(user_message, display_callback, buf)
     },
     body = request_body
   })
-  
+
   if response.status ~= 200 then
     local error_msg = "Error: " .. (response.body or "Unknown error")
     if display_callback then
@@ -240,30 +254,30 @@ function M.send_message(user_message, display_callback, buf)
     end
     return nil, error_msg
   end
-  
+
   local result = json.decode(response.body)
-  
+
   -- Add message to conversation history
   table.insert(M.conversation_history, {
     role = "user",
     content = user_message
   })
-  
+
   table.insert(M.conversation_history, {
     role = "assistant",
     content = result.content[1].text
   })
-  
+
   -- Limit history size
   while #M.conversation_history > conf.history_size * 2 do
     table.remove(M.conversation_history, 1)
   end
-  
+
   -- Display response
   if display_callback then
     display_callback(buf, result.content[1].text)
   end
-  
+
   return result.content[1].text
 end
 
