@@ -1,245 +1,261 @@
--- JSON module for Lua
--- This is a minimal JSON encoder/decoder for TheArchHive Claude integration
-
+-- Simple JSON parser for Claude integration
 local json = {}
 
-local escape_char_map = {
-  ["\\"] = "\\\\",
-  ["\""] = "\\\"",
-  ["\b"] = "\\b",
-  ["\f"] = "\\f",
-  ["\n"] = "\\n",
-  ["\r"] = "\\r",
-  ["\t"] = "\\t",
-}
+-- Forward declarations for recursive functions
+local parse_value
+local parse_object
+local parse_array
+local parse_string
+local parse_number
 
-local function escape_char(c)
-  return escape_char_map[c] or string.format("\\u%04x", c:byte())
+-- Helper function to skip whitespace
+local function skip_whitespace(str, pos)
+  while pos <= #str and string.match(string.sub(str, pos, pos), "^[ \n\r\t]") do
+    pos = pos + 1
+  end
+  return pos
 end
 
-local function encode_string(val)
-  return '"' .. val:gsub('[%z\1-\31\\"]', escape_char) .. '"'
-end
-
-local function encode_table(val, stack)
-  stack = stack or {}
+-- Parse a JSON value
+parse_value = function(str, pos)
+  pos = skip_whitespace(str, pos)
   
-  -- Circular reference check
-  if stack[val] then error("circular reference") end
-  stack[val] = true
+  local char = string.sub(str, pos, pos)
   
-  if rawget(val, 1) ~= nil or next(val) == nil then
-    -- Treat as array
-    local res = {}
-    for i, v in ipairs(val) do
-      table.insert(res, json.encode(v, stack))
-    end
-    stack[val] = nil
-    return "[" .. table.concat(res, ",") .. "]"
+  if char == "{" then
+    return parse_object(str, pos)
+  elseif char == "[" then
+    return parse_array(str, pos)
+  elseif char == "\"" then
+    return parse_string(str, pos)
+  elseif string.match(char, "^[%d%-]") then
+    return parse_number(str, pos)
+  elseif string.sub(str, pos, pos + 3) == "true" then
+    return true, pos + 4
+  elseif string.sub(str, pos, pos + 4) == "false" then
+    return false, pos + 5
+  elseif string.sub(str, pos, pos + 3) == "null" then
+    return nil, pos + 4
   else
-    -- Treat as object
-    local res = {}
-    for k, v in pairs(val) do
-      if type(k) == "string" then
-        table.insert(res, encode_string(k) .. ":" .. json.encode(v, stack))
-      end
-    end
-    stack[val] = nil
-    return "{" .. table.concat(res, ",") .. "}"
+    error("Unexpected character at position " .. pos .. ": " .. char)
   end
 end
 
-function json.encode(val, stack)
-  local t = type(val)
-  if t == "string" then
-    return encode_string(val)
-  elseif t == "number" or t == "boolean" or t == "nil" then
-    return tostring(val)
-  elseif t == "table" then
-    return encode_table(val, stack)
-  else
-    error("unsupported type: " .. t)
+-- Parse a JSON object
+parse_object = function(str, pos)
+  local obj = {}
+  pos = pos + 1  -- Skip the opening brace
+  
+  -- Check for empty object
+  pos = skip_whitespace(str, pos)
+  if string.sub(str, pos, pos) == "}" then
+    return obj, pos + 1
+  end
+  
+  while true do
+    -- Parse key
+    pos = skip_whitespace(str, pos)
+    if string.sub(str, pos, pos) ~= "\"" then
+      error("Expected string key at position " .. pos)
+    end
+    
+    local key, next_pos = parse_string(str, pos)
+    pos = next_pos
+    
+    -- Parse colon
+    pos = skip_whitespace(str, pos)
+    if string.sub(str, pos, pos) ~= ":" then
+      error("Expected ':' at position " .. pos)
+    end
+    pos = pos + 1
+    
+    -- Parse value
+    local val
+    val, pos = parse_value(str, pos)
+    obj[key] = val
+    
+    -- Check for end of object or next property
+    pos = skip_whitespace(str, pos)
+    local char = string.sub(str, pos, pos)
+    
+    if char == "}" then
+      return obj, pos + 1
+    elseif char == "," then
+      pos = pos + 1
+    else
+      error("Expected ',' or '}' at position " .. pos)
+    end
   end
 end
 
+-- Parse a JSON array
+parse_array = function(str, pos)
+  local arr = {}
+  pos = pos + 1  -- Skip the opening bracket
+  
+  -- Check for empty array
+  pos = skip_whitespace(str, pos)
+  if string.sub(str, pos, pos) == "]" then
+    return arr, pos + 1
+  end
+  
+  while true do
+    -- Parse value
+    local val
+    val, pos = parse_value(str, pos)
+    table.insert(arr, val)
+    
+    -- Check for end of array or next element
+    pos = skip_whitespace(str, pos)
+    local char = string.sub(str, pos, pos)
+    
+    if char == "]" then
+      return arr, pos + 1
+    elseif char == "," then
+      pos = pos + 1
+    else
+      error("Expected ',' or ']' at position " .. pos)
+    end
+  end
+end
+
+-- Parse a JSON string
+parse_string = function(str, pos)
+  pos = pos + 1  -- Skip the opening quote
+  local start_pos = pos
+  local escaped = false
+  
+  while pos <= #str do
+    local char = string.sub(str, pos, pos)
+    
+    if escaped then
+      -- Handle escape sequences
+      escaped = false
+    elseif char == "\\" then
+      escaped = true
+    elseif char == "\"" then
+      -- Found the closing quote
+      local content = string.sub(str, start_pos, pos - 1)
+      -- Handle basic escape sequences
+      content = content:gsub("\\\"", "\"")
+      content = content:gsub("\\\\", "\\")
+      content = content:gsub("\\n", "\n")
+      content = content:gsub("\\r", "\r")
+      content = content:gsub("\\t", "\t")
+      return content, pos + 1
+    end
+    
+    pos = pos + 1
+  end
+  
+  error("Unterminated string starting at position " .. (start_pos - 1))
+end
+
+-- Parse a JSON number
+parse_number = function(str, pos)
+  local start_pos = pos
+  
+  -- Skip sign
+  if string.sub(str, pos, pos) == "-" then
+    pos = pos + 1
+  end
+  
+  -- Parse integer part
+  while pos <= #str and string.match(string.sub(str, pos, pos), "%d") do
+    pos = pos + 1
+  end
+  
+  -- Parse decimal part
+  if pos <= #str and string.sub(str, pos, pos) == "." then
+    pos = pos + 1
+    while pos <= #str and string.match(string.sub(str, pos, pos), "%d") do
+      pos = pos + 1
+    end
+  end
+  
+  -- Parse exponent
+  if pos <= #str and string.match(string.sub(str, pos, pos), "[eE]") then
+    pos = pos + 1
+    -- Skip sign
+    if pos <= #str and string.match(string.sub(str, pos, pos), "[%+%-]") then
+      pos = pos + 1
+    end
+    -- Parse exponent value
+    while pos <= #str and string.match(string.sub(str, pos, pos), "%d") do
+      pos = pos + 1
+    end
+  end
+  
+  local num_str = string.sub(str, start_pos, pos - 1)
+  return tonumber(num_str), pos
+end
+
+-- Public function to decode JSON
 function json.decode(str)
-  if str == "null" then
+  if str == nil or str == "" then
     return nil
   end
   
-  local pos = 1
-  local function next_char()
-    pos = pos + 1
-    return str:sub(pos, pos)
-  end
+  local success, result = pcall(function()
+    local pos = 1
+    local value, _ = parse_value(str, pos)
+    return value
+  end)
   
-  local function skip_whitespace()
-    while pos <= #str and str:sub(pos, pos):match("[ \t\n\r]") do
-      pos = pos + 1
-    end
+  if success then
+    return result
+  else
+    error("JSON decode error: " .. result)
+    return nil
   end
-  
-  local function parse_string()
-    local has_unicode_escape = false
-    local s = ""
-    assert(str:sub(pos, pos) == '"', "expected string at position " .. pos)
-    pos = pos + 1
+end
+
+-- Public function to encode JSON
+function json.encode(data)
+  if data == nil then
+    return "null"
+  elseif type(data) == "boolean" then
+    return data and "true" or "false"
+  elseif type(data) == "number" then
+    return tostring(data)
+  elseif type(data) == "string" then
+    -- Escape special characters
+    local escaped = data:gsub("\\", "\\\\"):gsub("\"", "\\\""):gsub("\n", "\\n"):gsub("\r", "\\r"):gsub("\t", "\\t")
+    return "\"" .. escaped .. "\""
+  elseif type(data) == "table" then
+    -- Check if the table is an array
+    local is_array = true
+    local max_index = 0
     
-    while pos <= #str do
-      local c = str:sub(pos, pos)
-      if c == '"' then
-        pos = pos + 1
-        return s
-      elseif c == '\\' then
-        pos = pos + 1
-        c = str:sub(pos, pos)
-        if c == 'u' then
-          pos = pos + 1
-          local code = tonumber(str:sub(pos, pos + 3), 16)
-          pos = pos + 4
-          if code then
-            s = s .. string.char(code)
-          end
-          has_unicode_escape = true
-        else
-          local replacement = {
-            ["\""] = "\"", ["\\"] = "\\", ["/"] = "/",
-            ["b"] = "\b", ["f"] = "\f", ["n"] = "\n", ["r"] = "\r", ["t"] = "\t"
-          }
-          s = s .. (replacement[c] or c)
-          pos = pos + 1
-        end
-      else
-        s = s .. c
-        pos = pos + 1
+    for k, _ in pairs(data) do
+      if type(k) ~= "number" or k < 1 or math.floor(k) ~= k then
+        is_array = false
+        break
       end
+      max_index = math.max(max_index, k)
     end
     
-    error("unterminated string at position " .. pos)
-  end
-  
-  local function parse_number()
-    local start = pos
-    while pos <= #str and str:sub(pos, pos):match("[-%+%.%d%a]") do
-      pos = pos + 1
-    end
-    local num_str = str:sub(start, pos - 1)
-    return tonumber(num_str)
-  end
-  
-  local function parse_array()
-    assert(str:sub(pos, pos) == "[", "expected array at position " .. pos)
-    pos = pos + 1
-    
-    local arr = {}
-    local i = 1
-    
-    -- Empty array
-    skip_whitespace()
-    if str:sub(pos, pos) == "]" then
-      pos = pos + 1
-      return arr
-    end
-    
-    while pos <= #str do
-      skip_whitespace()
-      arr[i] = parse_value()
-      i = i + 1
-      skip_whitespace()
-      
-      local c = str:sub(pos, pos)
-      if c == "]" then
-        pos = pos + 1
-        return arr
-      elseif c == "," then
-        pos = pos + 1
-      else
-        error("expected ',' or ']' at position " .. pos)
+    if is_array and max_index > 0 then
+      -- Encode as array
+      local elements = {}
+      for i = 1, max_index do
+        table.insert(elements, json.encode(data[i] ~= nil and data[i] or vim.NIL))
       end
-    end
-    
-    error("unterminated array at position " .. pos)
-  end
-  
-  local function parse_object()
-    assert(str:sub(pos, pos) == "{", "expected object at position " .. pos)
-    pos = pos + 1
-    
-    local obj = {}
-    
-    -- Empty object
-    skip_whitespace()
-    if str:sub(pos, pos) == "}" then
-      pos = pos + 1
-      return obj
-    end
-    
-    while pos <= #str do
-      skip_whitespace()
-      
-      -- Parse key
-      assert(str:sub(pos, pos) == '"', "expected string key at position " .. pos)
-      local key = parse_string()
-      
-      -- Parse colon
-      skip_whitespace()
-      assert(str:sub(pos, pos) == ":", "expected ':' at position " .. pos)
-      pos = pos + 1
-      
-      -- Parse value
-      skip_whitespace()
-      obj[key] = parse_value()
-      
-      skip_whitespace()
-      local c = str:sub(pos, pos)
-      if c == "}" then
-        pos = pos + 1
-        return obj
-      elseif c == "," then
-        pos = pos + 1
-      else
-        error("expected ',' or '}' at position " .. pos)
-      end
-    end
-    
-    error("unterminated object at position " .. pos)
-  end
-  
-  local function parse_value()
-    skip_whitespace()
-    
-    local c = str:sub(pos, pos)
-    if c == '"' then
-      return parse_string()
-    elseif c == '[' then
-      return parse_array()
-    elseif c == '{' then
-      return parse_object()
-    elseif c:match("[%-%+%.%d]") then
-      return parse_number()
-    elseif str:sub(pos, pos + 3) == "true" then
-      pos = pos + 4
-      return true
-    elseif str:sub(pos, pos + 4) == "false" then
-      pos = pos + 5
-      return false
-    elseif str:sub(pos, pos + 3) == "null" then
-      pos = pos + 4
-      return nil
+      return "[" .. table.concat(elements, ",") .. "]"
     else
-      error("unexpected character at position " .. pos)
+      -- Encode as object
+      local elements = {}
+      for k, v in pairs(data) do
+        if type(k) == "string" or type(k) == "number" then
+          table.insert(elements, json.encode(tostring(k)) .. ":" .. json.encode(v))
+        end
+      end
+      return "{" .. table.concat(elements, ",") .. "}"
     end
+  else
+    error("Cannot encode value of type " .. type(data))
+    return nil
   end
-  
-  skip_whitespace()
-  local result = parse_value()
-  skip_whitespace()
-  
-  if pos <= #str then
-    error("trailing garbage at position " .. pos)
-  end
-  
-  return result
 end
 
 return json
