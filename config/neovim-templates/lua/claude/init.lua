@@ -872,7 +872,7 @@ function M.offer_script_execution(buf, response_text)
               vim.api.nvim_win_close(preview_win, true)
             end
           end
-	})
+        })
         
         -- Add keymap to execute from preview
         vim.api.nvim_buf_set_keymap(preview_buf, 'n', 'e', '', {
