@@ -1,6 +1,33 @@
 {
   "port": 5678,
   "snapshot_dir": "~/.local/share/thearchhive/snapshots",
-  "enable_command_execution": false,
-  "safe_commands": ["pacman -Qi", "uname", "df", "free", "cat /proc/cpuinfo", "lspci"]
+  "enable_command_execution": true,
+  "safe_commands": [
+    "pacman -Qi", 
+    "uname", 
+    "df", 
+    "free", 
+    "cat /proc/cpuinfo", 
+    "lspci",
+    "pacman -S",
+    "pacman -Syu",
+    "pacman -Ss",
+    "sudo pacman -S",
+    "sudo pacman -Syu",
+    "mkdir",
+    "touch",
+    "echo",
+    "cat",
+    "ls",
+    "grep",
+    "find",
+    "systemctl status",
+    "systemctl --user",
+    "cd",
+    "cp",
+    "mv",
+    "ln",
+    "neofetch",
+    "git"
+  ]
 }

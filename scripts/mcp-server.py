@@ -258,8 +258,40 @@ def execute_command():
             logger.warning(f"Command not allowed: {command}")
             return jsonify({"error": "Command not allowed"}), 403
             
-        result = run_command(command)
-        return jsonify(result)
+        # Enhanced security checks
+        if "rm -rf" in command or ":(){ :|:& };" in command:
+            logger.error(f"Potentially dangerous command blocked: {command}")
+            return jsonify({"error": "Command contains potentially dangerous patterns"}), 403
+            
+        # Execute the command with timeout for safety
+        try:
+            result = subprocess.run(
+                command, 
+                shell=True, 
+                capture_output=True, 
+                text=True,
+                timeout=30  # 30 second timeout for commands
+            )
+            
+            response = {
+                "success": result.returncode == 0,
+                "output": result.stdout,
+                "error": result.stderr,
+                "returncode": result.returncode
+            }
+            
+            logger.info(f"Command executed with return code: {result.returncode}")
+            return jsonify(response)
+            
+        except subprocess.TimeoutExpired:
+            logger.error(f"Command timed out: {command}")
+            return jsonify({
+                "success": False, 
+                "output": "", 
+                "error": "Command execution timed out (30s limit)",
+                "returncode": -1
+            }), 408
+            
     except Exception as e:
         logger.error(f"Error in execute_command endpoint: {str(e)}")
         return jsonify({"error": str(e)}), 500

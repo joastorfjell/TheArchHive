@@ -70,14 +70,14 @@ local function format_message(system_prompt, user_message, conversation_history)
   return messages, system_prompt
 end
 
--- Safer HTTP request function with error handling
+-- Safer HTTP request function with improved timeout handling
 local function make_http_request(url, method, options)
   -- Ensure method is uppercase
   method = string.upper(method or "GET")
   options = options or {}
   
-  -- Set defaults
-  options.timeout = options.timeout or 30000  -- 30 second timeout
+  -- Set defaults with increased timeout
+  options.timeout = options.timeout or 60000  -- 60 second timeout (was 30s)
   options.headers = options.headers or {}
   
   -- Create a protected call to curl
@@ -109,8 +109,14 @@ local function make_http_request(url, method, options)
     return nil, "HTTP request failed: " .. tostring(result)
   end
   
+  -- Handle timeout explicitly
+  if result.status == 28 then -- CURLE_OPERATION_TIMEDOUT
+    return nil, "Request timed out. Try with a shorter message or try again later."
+  end
+  
   return result, nil
 end
+
 
 -- Function to fetch system information from MCP
 function M.fetch_system_info()
@@ -256,7 +262,7 @@ function M.generate_system_context()
   return context
 end
 
--- Function to send message to Claude API (with better error handling)
+-- Function to send message to Claude API (with better error and timeout handling)
 function M.send_message(user_message, display_callback, buf)
   local conf = M.config or init_config()
   
@@ -278,13 +284,13 @@ function M.send_message(user_message, display_callback, buf)
     system = system_prompt,
     messages = messages
   })
-
+  
   -- Display thinking message
   if display_callback then
     display_callback(buf, "Thinking...")
   end
   
-  -- Send API request with error handling
+  -- Send API request with improved error handling
   local response, err = make_http_request(
     "https://api.anthropic.com/v1/messages",
     "POST",
@@ -294,12 +300,19 @@ function M.send_message(user_message, display_callback, buf)
         ["anthropic-version"] = "2023-06-01",
         ["content-type"] = "application/json"
       },
-      body = request_body
+      body = request_body,
+      timeout = 60000  -- Explicitly set 60s timeout for Claude API calls
     }
   )
   
   if err or not response or response.status ~= 200 then
-    local error_msg = "Error: " .. (err or (response and response.body or "Unknown error"))
+    local error_msg
+    if err and err:find("timed out") then
+      error_msg = "The request to Claude API timed out. Please try again with a shorter message or wait a moment before retrying."
+    else
+      error_msg = "Error: " .. (err or (response and response.body or "Unknown error"))
+    end
+    
     if display_callback then
       display_callback(buf, error_msg)
     end
