@@ -439,14 +439,14 @@ function M.init()
     return nil, nil
   end
   
-  -- Now result contains the actual return values from init_window,
-  -- which are buf and win directly, not in a table
-  local buf, win = result, nil
+  -- Get buffer and window from result
+  -- init_window returns multiple values, not a table
+  local buf, win = result, nil  -- Default in case init_window changes
   
-  if type(result) == "table" then
-    -- If init_window returned a table, unpack it
-    buf, win = unpack(result)
-  end
+  -- To be 100% safe, re-run init_window without pcall
+  -- This is normally not needed, but ensures we properly capture both values
+  local temp_buf, temp_win = init_window()
+  buf, win = temp_buf, temp_win
   
   -- Initial message
   local welcome_msg = [[
@@ -464,15 +464,19 @@ function M.init()
   
   M.display_message(buf, welcome_msg)
   
-  -- Set up keymaps
-  local ok, err = pcall(function()
-    vim.api.nvim_buf_set_keymap(buf, 'n', '<Space>ca', 
-      string.format([[<Cmd>lua require('claude').handle_input(%d, %d)<CR>]], buf, win), 
-      {noremap = true, silent = true})
-  end)
-  
-  if not ok then
-    print("Error setting up keymaps: " .. tostring(err))
+  -- Set up keymaps - safer approach
+  if buf and win then
+    local keymap_ok, keymap_err = pcall(function()
+      vim.api.nvim_buf_set_keymap(buf, 'n', '<Space>ca', 
+        string.format([[<Cmd>lua require('claude').handle_input(%d, %d)<CR>]], buf, win), 
+        {noremap = true, silent = true})
+    end)
+    
+    if not keymap_ok then
+      print("Error setting up keymaps: " .. tostring(keymap_err))
+    end
+  else
+    print("Error: Invalid buffer or window")
   end
   
   return buf, win
