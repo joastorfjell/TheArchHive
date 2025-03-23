@@ -38,39 +38,55 @@ CONFIG_DIR = os.path.expanduser("~/.config/thearchhive")
 MCP_CONFIG_PATH = os.path.join(CONFIG_DIR, "mcp_config.json")
 MCP_PORT = 5678
 
+def get_default_config():
+    """Return default configuration"""
+    return {
+        "port": MCP_PORT,
+        "snapshot_dir": os.path.expanduser("~/.local/share/thearchhive/snapshots"),
+        "enable_command_execution": False,
+        "safe_commands": ["pacman -Qi", "uname", "df", "free", "cat /proc/cpuinfo", "lspci"]
+    }
+
 def ensure_config_exists():
     """Ensure the MCP configuration file exists"""
     logger.info(f"Checking configuration in {CONFIG_DIR}")
     
     if not os.path.exists(CONFIG_DIR):
         logger.info(f"Creating config directory: {CONFIG_DIR}")
-        os.makedirs(CONFIG_DIR)
+        os.makedirs(CONFIG_DIR, exist_ok=True)
     
     if not os.path.exists(MCP_CONFIG_PATH):
         logger.info(f"Creating default configuration: {MCP_CONFIG_PATH}")
-        default_config = {
-            "port": MCP_PORT,
-            "snapshot_dir": os.path.expanduser("~/.local/share/thearchhive/snapshots"),
-            "enable_command_execution": False,
-            "safe_commands": ["pacman -Qi", "uname", "df", "free"]
-        }
+        default_config = get_default_config()
         
         with open(MCP_CONFIG_PATH, 'w') as f:
             json.dump(default_config, f, indent=2)
         os.chmod(MCP_CONFIG_PATH, 0o600)  # Secure permissions
-        
-    # Ensure snapshot directory exists
-    config = load_config()
-    snapshot_dir = os.path.expanduser(config["snapshot_dir"])
-    logger.info(f"Ensuring snapshot directory exists: {snapshot_dir}")
     
-    if not os.path.exists(snapshot_dir):
-        os.makedirs(snapshot_dir)
+    # Ensure snapshot directory exists
+    try:
+        # Read config file directly here without calling load_config to avoid recursion
+        with open(MCP_CONFIG_PATH, 'r') as f:
+            config = json.load(f)
+        
+        snapshot_dir = os.path.expanduser(config.get("snapshot_dir", "~/.local/share/thearchhive/snapshots"))
+        logger.info(f"Ensuring snapshot directory exists: {snapshot_dir}")
+        
+        if not os.path.exists(snapshot_dir):
+            os.makedirs(snapshot_dir, exist_ok=True)
+    except Exception as e:
+        logger.error(f"Error ensuring snapshot directory: {str(e)}")
+        # If reading config fails, ensure default snapshot directory exists
+        default_snapshot_dir = os.path.expanduser("~/.local/share/thearchhive/snapshots")
+        if not os.path.exists(default_snapshot_dir):
+            os.makedirs(default_snapshot_dir, exist_ok=True)
 
 def load_config():
     """Load MCP configuration"""
     try:
+        # First make sure config file exists
         ensure_config_exists()
+        
         logger.info(f"Loading configuration from {MCP_CONFIG_PATH}")
         
         with open(MCP_CONFIG_PATH, 'r') as f:
@@ -84,12 +100,7 @@ def load_config():
     except Exception as e:
         logger.error(f"Error loading configuration: {str(e)}")
         # Return default config if loading fails
-        return {
-            "port": MCP_PORT,
-            "snapshot_dir": os.path.expanduser("~/.local/share/thearchhive/snapshots"),
-            "enable_command_execution": False,
-            "safe_commands": ["pacman -Qi", "uname", "df", "free"]
-        }
+        return get_default_config()
 
 def run_command(command):
     """Run a system command and return its output"""
@@ -289,39 +300,25 @@ def create_snapshot():
         }
         
         # Get ClaudeScript representation
-        try:
-            claudescript_data = {
-                "packages": packages_response.get("packages", []),
-                "system": {
-                    "kernel": system_info_response.get("os", {}).get("kernel", ""),
-                    "cpu": system_info_response.get("cpu", {}).get("model", ""),
-                    "memory": f"{system_info_response.get('memory', {}).get('total_gb', 0)}GB"
-                }
-            }
+        claudescript = []
+        
+        # Add kernel info if available
+        if "os" in system_info_response and "kernel" in system_info_response["os"]:
+            claudescript.append(f"k:{system_info_response['os']['kernel']}")
             
-            # Process claudescript data
-            claudescript = []
+        # Add CPU info if available
+        if "cpu" in system_info_response and "model" in system_info_response["cpu"]:
+            claudescript.append(f"c:{system_info_response['cpu']['model']}")
             
-            # Add kernel info
-            if claudescript_data["system"]["kernel"]:
-                claudescript.append(f"k:{claudescript_data['system']['kernel']}")
-                
-            # Add CPU info
-            if claudescript_data["system"]["cpu"]:
-                claudescript.append(f"c:{claudescript_data['system']['cpu']}")
-                
-            # Add memory info
-            if claudescript_data["system"]["memory"]:
-                claudescript.append(f"m:{claudescript_data['system']['memory']}")
-                
-            # Add package info
-            for pkg in claudescript_data["packages"]:
-                claudescript.append(f"p:{pkg['name']}-{pkg['version']}")
-                
-            snapshot_data["claudescript"] = claudescript
-        except Exception as e:
-            logger.error(f"Error creating ClaudeScript: {str(e)}")
-            snapshot_data["claudescript"] = []
+        # Add memory info if available
+        if "memory" in system_info_response and "total_gb" in system_info_response["memory"]:
+            claudescript.append(f"m:{system_info_response['memory']['total_gb']}GB")
+            
+        # Add package info
+        for pkg in packages_response.get("packages", []):
+            claudescript.append(f"p:{pkg['name']}-{pkg['version']}")
+            
+        snapshot_data["claudescript"] = claudescript
         
         # Save snapshot
         try:
@@ -406,6 +403,8 @@ def main():
         
         # Ensure configurations exist
         ensure_config_exists()
+        
+        # Load configuration
         config = load_config()
         
         # Get port from config
