@@ -744,6 +744,68 @@ class ClaudeScriptRunner:
             logger.error(f"Error applying ClaudeScript from file: {e}")
             return False
 
+
+    @staticmethod
+    def validate_script(script_content, validation_level="normal"):
+        """
+        Validate a script using the MCP server
+    
+        Args:
+            script_content: The content of the script to validate
+            validation_level: Level of validation (minimal, normal, strict)
+        
+        Returns:
+            Dictionary with validation information including ID and script path
+        """
+        try:
+            # Check if MCP server is running
+            mcp_url = "http://127.0.0.1:5678"  # Should be configurable
+        
+            # Send script for validation
+            response = requests.post(
+                f"{mcp_url}/script/validate",
+                json={
+                    "script": script_content,
+                    "validation_level": validation_level
+                }
+            )
+        
+            if response.status_code != 200:
+                logger.error(f"Error validating script: {response.text}")
+                return None
+        
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error validating script: {e}")
+            return None
+
+    @staticmethod
+    def get_validation_results(validation_id):
+        """
+        Get the results of a validated script
+    
+        Args:
+            validation_id: The validation ID returned from validate_script
+        
+        Returns:
+            Dictionary with validation results
+        """
+        try:
+            # Check if MCP server is running
+            mcp_url = "http://127.0.0.1:5678"  # Should be configurable
+        
+            # Get validation results
+            response = requests.get(f"{mcp_url}/script/results/{validation_id}")
+        
+            if response.status_code != 200:
+                logger.error(f"Error getting validation results: {response.text}")
+                return None
+        
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error getting validation results: {e}")
+            return None
+
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="TheArchHive Standard Operating Tools")

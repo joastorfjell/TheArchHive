@@ -149,7 +149,7 @@ check_requirements() {
   fi
   
   # Check for required commands
-  local requirements=("git" "python" "nvim" "curl" "jq" "tmux")
+  local requirements=("git" "python" "nvim" "curl" "jq" "tmux" "bash")
   local missing_requirements=()
   
   for cmd in "${requirements[@]}"; do
@@ -174,7 +174,7 @@ check_requirements() {
   fi
   
   # Check for Python modules
-  local python_modules=("flask" "psutil")
+  local python_modules=("flask" "psutil" "request")
   local missing_modules=()
   
   for module in "${python_modules[@]}"; do

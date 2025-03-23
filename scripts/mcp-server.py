@@ -424,6 +424,167 @@ def health_check():
     """Simple health check endpoint"""
     return jsonify({"status": "ok", "message": "MCP Server is running"})
 
+# Terminal output validation
+
+@app.route('/script/validate', methods=['POST'])
+def validate_script():
+    """Validate a script by running it with validation points"""
+    try:
+        logger.info("Script validation requested")
+        data = request.get_json()
+        
+        if not data or "script" not in data:
+            return jsonify({"error": "No script provided"}), 400
+            
+        script_content = data["script"]
+        validation_level = data.get("validation_level", "normal")  # Options: minimal, normal, strict
+        
+        # Generate a validation wrapper for the script
+        validated_script, validation_id = generate_validation_wrapper(script_content, validation_level)
+        
+        # Save the validated script
+        script_dir = os.path.expanduser("~/.local/share/thearchhive/scripts")
+        os.makedirs(script_dir, exist_ok=True)
+        
+        script_path = os.path.join(script_dir, f"validated_script_{validation_id}.sh")
+        with open(script_path, 'w') as f:
+            f.write(validated_script)
+        os.chmod(script_path, 0o755)
+        
+        return jsonify({
+            "validation_id": validation_id,
+            "script_path": script_path,
+            "validation_level": validation_level
+        })
+    except Exception as e:
+        logger.error(f"Error in validate_script endpoint: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/script/results/<validation_id>', methods=['GET'])
+def get_validation_results(validation_id):
+    """Get the results of a validated script execution"""
+    try:
+        logger.info(f"Retrieving validation results for ID: {validation_id}")
+        
+        # Check if results file exists
+        results_dir = os.path.expanduser("~/.local/share/thearchhive/validation_results")
+        results_path = os.path.join(results_dir, f"{validation_id}.json")
+        
+        if not os.path.exists(results_path):
+            return jsonify({"error": "Validation results not found"}), 404
+            
+        with open(results_path, 'r') as f:
+            results = json.load(f)
+            
+        return jsonify(results)
+    except Exception as e:
+        logger.error(f"Error retrieving validation results: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+def generate_validation_wrapper(script_content, validation_level):
+    """Generate a script wrapper with validation checkpoints"""
+    # Generate a unique ID for this validation run
+    validation_id = f"{int(time.time())}_{random.randint(1000, 9999)}"
+    
+    # Create results directory
+    results_dir = os.path.expanduser("~/.local/share/thearchhive/validation_results")
+    os.makedirs(results_dir, exist_ok=True)
+    results_path = os.path.join(results_dir, f"{validation_id}.json")
+    
+    # Create the validation wrapper
+    wrapper = f"""#!/bin/bash
+
+# TheArchHive Validation Wrapper
+# Validation ID: {validation_id}
+# Level: {validation_level}
+# Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+# Initialize validation results file
+cat > {results_path} << 'INIT_JSON'
+{{
+    "validation_id": "{validation_id}",
+    "start_time": "{datetime.datetime.now().isoformat()}",
+    "status": "running",
+    "steps": []
+}}
+INIT_JSON
+
+# Function to log validation results
+log_validation() {{
+    step_num=$1
+    command=$2
+    exit_code=$3
+    output=$4
+    
+    # Create temporary JSON for this step
+    step_json=$(cat << EOF
+    {{
+        "step": $step_num,
+        "command": $(echo "$command" | jq -Rs .),
+        "exit_code": $exit_code,
+        "output": $(echo "$output" | jq -Rs .),
+        "timestamp": "$(date -Iseconds)"
+    }}
+EOF
+    )
+    
+    # Update the results file
+    tmp_file=$(mktemp)
+    jq ".steps += [$step_json]" {results_path} > "$tmp_file" && mv "$tmp_file" {results_path}
+}}
+
+# Set bash options based on validation level
+"""
+    
+    # Add validation level settings
+    if validation_level == "strict":
+        wrapper += """set -euo pipefail  # Exit on error, undefined vars, and pipe failures
+"""
+    elif validation_level == "normal":
+        wrapper += """set -eo pipefail  # Exit on error and pipe failures
+"""
+    else:  # minimal
+        wrapper += """set -e  # Exit on error
+"""
+    
+    # Process the original script, adding validation
+    lines = script_content.split('\n')
+    processed_script = []
+    step_num = 0
+    
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith('#') and not stripped.startswith('function ') and not stripped.startswith('if ') and not stripped.startswith('else') and not stripped.startswith('fi') and not stripped.startswith('for ') and not stripped.startswith('done') and not stripped.startswith('while ') and not stripped.startswith('do '):
+            # This looks like a command line, add validation
+            step_num += 1
+            processed_script.append(f"""
+# Step {step_num}
+echo "Executing: {stripped}"
+validation_output_{step_num}=$({{ {stripped}; }} 2>&1)
+validation_exit_{step_num}=$?
+echo "$validation_output_{step_num}"
+log_validation {step_num} "{stripped}" $validation_exit_{step_num} "$validation_output_{step_num}"
+if [ $validation_exit_{step_num} -ne 0 ]; then
+    echo "Command failed with exit code $validation_exit_{step_num}"
+    {"exit $validation_exit_{step_num}" if validation_level != "minimal" else "# Continue despite error in minimal mode"}
+fi
+""")
+        else:
+            # Pass through other lines (comments, control structures, etc.)
+            processed_script.append(line)
+    
+    # Add completion marker
+    wrapper += '\n'.join(processed_script) + f"""
+
+# Mark validation as complete
+tmp_file=$(mktemp)
+jq '.status = "completed" | .end_time = "{datetime.datetime.now().isoformat()}"' {results_path} > "$tmp_file" && mv "$tmp_file" {results_path}
+
+echo "Script execution completed. Validation ID: {validation_id}"
+"""
+    
+    return wrapper, validation_id
+
 def main():
     """Main function for running the server"""
     try:
