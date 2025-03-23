@@ -1,294 +1,360 @@
--- TheArchHive: Claude integration for Neovim
--- Fixed version with proper API request format including max_tokens
+-- Enhanced Claude integration with MCP
+-- ~/.config/nvim/lua/claude/init.lua
 
 local M = {}
-local api = vim.api
-local fn = vim.fn
+local curl = require("plenary.curl")
+local json = require("claude.json")
+local config = require("claude.config")
 
--- Buffer and window IDs
-M.buf = nil
-M.win = nil
-M.initialized = false
-M.history = {}
+-- Default configuration
+local default_config = {
+  mcp_url = "http://127.0.0.1:5678",
+  claude_api_key = "",
+  claude_model = "claude-3-5-sonnet-20240229",
+  max_tokens = 4096,
+  history_size = 10
+}
 
--- Load configuration - simplified for reliability
-local function load_config()
-    local home = os.getenv("HOME")
-    local config_path = home .. "/.config/thearchhive/claude_config.json"
-    
-    local file = io.open(config_path, "r")
-    if not file then
-        return nil
-    end
-    
-    local content = file:read("*all")
-    file:close()
-    
-    -- Simple pattern matching to extract API key
-    local api_key = content:match('"api_key"%s*:%s*"([^"]+)"')
-    if not api_key then
-        return nil
-    end
-    
-    return {
-        api_key = api_key,
-        model = content:match('"model"%s*:%s*"([^"]+)"') or "claude-3-5-sonnet-20240620",
-        max_tokens = 4000,
-        temperature = 0.7
-    }
+-- Initialize configuration
+local function init_config()
+  M.config = vim.tbl_deep_extend("force", default_config, config.load_claude_config() or {})
+  return M.config
 end
 
 -- Initialize Claude window
+local function init_window()
+  local win_width = math.floor(vim.o.columns * 0.8)
+  local win_height = math.floor(vim.o.lines * 0.8)
+  local row = math.floor((vim.o.lines - win_height) / 2)
+  local col = math.floor((vim.o.columns - win_width) / 2)
+
+  -- Create a new buffer
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_option(buf, 'bufhidden', 'wipe')
+  
+  -- Create window
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = 'editor',
+    width = win_width,
+    height = win_height,
+    row = row,
+    col = col,
+    style = 'minimal',
+    border = 'rounded'
+  })
+
+  -- Set window options
+  vim.api.nvim_win_set_option(win, 'winblend', 0)
+  vim.api.nvim_win_set_option(win, 'cursorline', true)
+
+  return buf, win
+end
+
+-- Format message for Claude API
+local function format_message(system_prompt, user_message, conversation_history)
+  local messages = {}
+  
+  -- Add system message if provided
+  if system_prompt and system_prompt ~= "" then
+    table.insert(messages, {
+      role = "system",
+      content = system_prompt
+    })
+  end
+  
+  -- Add conversation history
+  if conversation_history then
+    for _, msg in ipairs(conversation_history) do
+      table.insert(messages, msg)
+    end
+  end
+  
+  -- Add the current user message
+  table.insert(messages, {
+    role = "user",
+    content = user_message
+  })
+  
+  return messages
+end
+
+-- Function to fetch system information from MCP
+function M.fetch_system_info()
+  local conf = M.config or init_config()
+  local response = curl.get({
+    url = conf.mcp_url .. "/system/info",
+    accept = "application/json"
+  })
+  
+  if response.status ~= 200 then
+    return nil, "Failed to fetch system info: " .. (response.body or "Unknown error")
+  end
+  
+  return json.decode(response.body)
+end
+
+-- Function to fetch installed packages from MCP
+function M.fetch_installed_packages()
+  local conf = M.config or init_config()
+  local response = curl.get({
+    url = conf.mcp_url .. "/packages/installed",
+    accept = "application/json"
+  })
+  
+  if response.status ~= 200 then
+    return nil, "Failed to fetch packages: " .. (response.body or "Unknown error")
+  end
+  
+  return json.decode(response.body)
+end
+
+-- Create a system snapshot
+function M.create_snapshot()
+  local conf = M.config or init_config()
+  local response = curl.post({
+    url = conf.mcp_url .. "/snapshot/create",
+    accept = "application/json",
+    body = "{}"  -- Empty JSON object
+  })
+  
+  if response.status ~= 200 then
+    return nil, "Failed to create snapshot: " .. (response.body or "Unknown error")
+  end
+  
+  return json.decode(response.body)
+end
+
+-- Function to execute a command via MCP (if enabled)
+function M.execute_command(command)
+  local conf = M.config or init_config()
+  local response = curl.post({
+    url = conf.mcp_url .. "/execute",
+    accept = "application/json",
+    body = json.encode({ command = command })
+  })
+  
+  if response.status ~= 200 then
+    return nil, "Failed to execute command: " .. (response.body or "Unknown error")
+  end
+  
+  return json.decode(response.body)
+end
+
+-- Generate system context for Claude
+function M.generate_system_context()
+  local system_info, err_info = M.fetch_system_info()
+  local packages, err_pkg = M.fetch_installed_packages()
+  
+  if not system_info then
+    return "System information unavailable: " .. (err_info or "Unknown error")
+  end
+  
+  local context = "You are Claude, an AI assistant integrated into TheArchHive for Arch Linux. "
+    .. "You're running inside Neovim and have access to system information through the MCP server. "
+    .. "You can help configure, optimize, and troubleshoot Arch Linux systems.\n\n"
+    .. "Current system information:\n"
+    .. "- Hostname: " .. (system_info.hostname or "Unknown") .. "\n"
+    .. "- Kernel: " .. (system_info.os and system_info.os.kernel or "Unknown") .. "\n"
+    .. "- CPU: " .. (system_info.cpu and system_info.cpu.model or "Unknown") .. " ("
+    .. (system_info.cpu and system_info.cpu.cores or 0) .. " cores, "
+    .. (system_info.cpu and system_info.cpu.threads or 0) .. " threads)\n"
+    .. "- Memory: " .. (system_info.memory and system_info.memory.total_gb or 0) .. "GB total, "
+    .. (system_info.memory and system_info.memory.used_gb or 0) .. "GB used ("
+    .. (system_info.memory and system_info.memory.percent_used or 0) .. "%)\n"
+    .. "- Disk: " .. (system_info.disk and system_info.disk.total_gb or 0) .. "GB total, "
+    .. (system_info.disk and system_info.disk.used_gb or 0) .. "GB used ("
+    .. (system_info.disk and system_info.disk.percent_used or 0) .. "%)\n"
+  
+  if system_info.gpu then
+    context = context .. "- GPU: " .. system_info.gpu .. "\n"
+  end
+  
+  if packages and packages.packages then
+    context = context .. "\nSome key installed packages:\n"
+    -- Only show a subset of important packages to avoid making the context too large
+    local important_packages = {"linux", "base", "base-devel", "neovim", "vim", "emacs", "xorg", 
+                               "wayland", "sway", "i3", "kde", "gnome", "firefox", "chromium"}
+    local count = 0
+    for _, pkg in ipairs(packages.packages) do
+      for _, imp in ipairs(important_packages) do
+        if pkg.name:find(imp) then
+          context = context .. "- " .. pkg.name .. " (" .. pkg.version .. ")\n"
+          count = count + 1
+          break
+        end
+      end
+      if count >= 10 then break end
+    end
+    context = context .. "\nTotal installed packages: " .. #packages.packages .. "\n"
+  end
+  
+  context = context .. "\nYou can provide suggestions for system optimization, help with configuration, "
+    .. "and troubleshoot issues. You can also create system snapshots and execute safe commands with user approval."
+    .. "\n\nPlease be concise and tailor your responses to the user's setup as shown above."
+  
+  return context
+end
+
+-- Function to send message to Claude API
+function M.send_message(user_message, display_callback, buf)
+  local conf = M.config or init_config()
+  
+  -- Generate system context
+  local system_context = M.generate_system_context()
+  
+  -- Initialize conversation history if not exists
+  if not M.conversation_history then
+    M.conversation_history = {}
+  end
+  
+  -- Format messages
+  local messages = format_message(system_context, user_message, M.conversation_history)
+  
+  -- Build request body
+  local request_body = json.encode({
+    model = conf.claude_model,
+    max_tokens = conf.max_tokens,
+    messages = messages
+  })
+  
+  -- Display thinking message
+  if display_callback then
+    display_callback(buf, "Thinking...")
+  end
+  
+  -- Make API request
+  local response = curl.post({
+    url = "https://api.anthropic.com/v1/messages",
+    headers = {
+      ["x-api-key"] = conf.claude_api_key,
+      ["anthropic-version"] = "2023-06-01",
+      ["content-type"] = "application/json"
+    },
+    body = request_body
+  })
+  
+  if response.status ~= 200 then
+    local error_msg = "Error: " .. (response.body or "Unknown error")
+    if display_callback then
+      display_callback(buf, error_msg)
+    end
+    return nil, error_msg
+  end
+  
+  local result = json.decode(response.body)
+  
+  -- Add message to conversation history
+  table.insert(M.conversation_history, {
+    role = "user",
+    content = user_message
+  })
+  
+  table.insert(M.conversation_history, {
+    role = "assistant",
+    content = result.content[1].text
+  })
+  
+  -- Limit history size
+  while #M.conversation_history > conf.history_size * 2 do
+    table.remove(M.conversation_history, 1)
+  end
+  
+  -- Display response
+  if display_callback then
+    display_callback(buf, result.content[1].text)
+  end
+  
+  return result.content[1].text
+end
+
+-- Display message in buffer
+function M.display_message(buf, message)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+  
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, {})
+  
+  local lines = {}
+  for line in message:gmatch("[^\r\n]+") do
+    table.insert(lines, line)
+  end
+  
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+end
+
+-- Function to handle user input
+function M.handle_input(buf, win)
+  local prompt = "Ask Claude: "
+  local input = vim.fn.input({
+    prompt = prompt,
+    cancelreturn = "__CANCEL__"
+  })
+  
+  if input == "__CANCEL__" or input == "" then
+    return
+  end
+  
+  -- Display user question
+  M.display_message(buf, "You: " .. input .. "\n\nClaude: ")
+  
+  -- Send to Claude API
+  M.send_message(input, function(buffer, response)
+    if buffer and vim.api.nvim_buf_is_valid(buffer) then
+      M.display_message(buffer, "You: " .. input .. "\n\nClaude: " .. response)
+    end
+  end, buf)
+end
+
+-- Initialize Claude
 function M.init()
-    if M.initialized then return end
-    
-    -- Create buffer
-    M.buf = api.nvim_create_buf(false, true)
-    api.nvim_buf_set_option(M.buf, 'buftype', 'nofile')
-    api.nvim_buf_set_option(M.buf, 'bufhidden', 'hide')
-    api.nvim_buf_set_option(M.buf, 'swapfile', false)
-    api.nvim_buf_set_name(M.buf, 'TheArchHive-Claude')
-    
-    -- Initial greeting message
-    local lines = {
-        "+--------------------------------------+",
-        "|             TheArchHive             |",
-        "|      Claude AI Integration          |",
-        "+--------------------------------------+",
-        "",
-        "Welcome to TheArchHive Claude Integration!",
-        "----------------------------------------",
-        "",
-        "I'm here to help you with your Arch Linux setup and configuration.",
-        "Ask me about packages, configurations, or system optimizations.",
-        "",
-    }
-    
-    -- Check if config is available
-    local config = load_config()
-    if not config or not config.api_key then
-        table.insert(lines, "⚠️  Claude API is not configured yet!")
-        table.insert(lines, "Run './scripts/setup-claude.sh' to set up your API key.")
-    else
-        table.insert(lines, "Claude API is configured and ready to use.")
-        table.insert(lines, "Type your question and press <Enter> to send.")
-    end
-    
-    -- Set buffer lines
-    api.nvim_buf_set_lines(M.buf, 0, -1, false, lines)
-    
-    M.initialized = true
+  -- Load configuration
+  init_config()
+  
+  -- Create buffer and window
+  local buf, win = init_window()
+  
+  -- Initial message
+  local welcome_msg = [[
+   ████████ ██   ██ ███████      █████  ██████   ██████ ██   ██     ██   ██ ██ ██    ██ ███████ 
+      ██    ██   ██ ██          ██   ██ ██   ██ ██      ██   ██     ██   ██ ██ ██    ██ ██      
+      ██    ███████ █████       ███████ ██████  ██      ███████     ███████ ██ ██    ██ █████   
+      ██    ██   ██ ██          ██   ██ ██   ██ ██      ██   ██     ██   ██ ██  ██  ██  ██      
+      ██    ██   ██ ███████     ██   ██ ██   ██  ██████ ██   ██     ██   ██ ██   ████   ███████ 
+                                                                                                
+  Welcome to TheArchHive with Claude integration!
+  I'm ready to help you optimize your Arch Linux system.
+  
+  Press <Space>ca to ask a question or type any message below:
+  ]]
+  
+  M.display_message(buf, welcome_msg)
+  
+  -- Set up keymaps
+  vim.api.nvim_buf_set_keymap(buf, 'n', '<Space>ca', 
+    [[<Cmd>lua require('claude').handle_input(]] .. buf .. [[, ]] .. win .. [[)<CR>]], 
+    {noremap = true, silent = true})
+  
+  return buf, win
 end
 
--- Open Claude window
-function M.open()
-    if not M.initialized then
-        M.init()
-    end
-    
-    local width = math.floor(vim.o.columns * 0.8)
-    local height = math.floor(vim.o.lines * 0.8)
-    local row = math.floor((vim.o.lines - height) / 2)
-    local col = math.floor((vim.o.columns - width) / 2)
-    
-    -- Window options
-    local opts = {
-        relative = 'editor',
-        width = width,
-        height = height,
-        row = row,
-        col = col,
-        style = 'minimal',
-        border = 'rounded'
-    }
-    
-    -- Create window
-    M.win = api.nvim_open_win(M.buf, true, opts)
-    
-    -- Set window options
-    api.nvim_win_set_option(M.win, 'wrap', true)
-    api.nvim_win_set_option(M.win, 'cursorline', true)
-    
-    -- Set key mappings
-    api.nvim_buf_set_keymap(M.buf, 'n', 'q', ':lua require("claude").close()<CR>', 
-                          {noremap = true, silent = true})
-    api.nvim_buf_set_keymap(M.buf, 'n', '<CR>', ':lua require("claude").ask_question()<CR>', 
-                          {noremap = true, silent = true})
-    
-    -- Add input line if not already present
-    local line_count = api.nvim_buf_line_count(M.buf)
-    local last_line = api.nvim_buf_get_lines(M.buf, line_count - 1, line_count, false)[1] or ""
-    
-    if last_line ~= "> " then
-        api.nvim_buf_set_lines(M.buf, line_count, line_count, false, {"", "> "})
-    end
-    
-    -- Move cursor to input line and enter insert mode
-    local new_line_count = api.nvim_buf_line_count(M.buf)
-    api.nvim_win_set_cursor(M.win, {new_line_count, 2})
-    vim.cmd('startinsert!')
-end
-
--- Close Claude window
-function M.close()
-    if M.win and api.nvim_win_is_valid(M.win) then
-        api.nvim_win_close(M.win, true)
-    end
-    M.win = nil
-end
-
--- Call Claude API
-function M.call_claude_api(prompt)
-    local config = load_config()
-    if not config or not config.api_key then
-        return "Error: Claude API is not configured. Run './scripts/setup-claude.sh' to set up your API key."
-    end
-    
-    -- Add to history
-    table.insert(M.history, {role = "user", content = prompt})
-    
-    -- Create temporary file for the response
-    local temp_file = os.tmpname()
-    
-    -- Prepare message history for the API
-    local messages = {}
-    -- Only include the last 10 messages to avoid token limits
-    local start_idx = math.max(1, #M.history - 10)
-    for i = start_idx, #M.history do
-        table.insert(messages, M.history[i])
-    end
-    
-    -- Convert messages to JSON format manually
-    local messages_json = "["
-    for i, msg in ipairs(messages) do
-        if i > 1 then messages_json = messages_json .. "," end
-        messages_json = messages_json .. '{"role":"' .. msg.role .. '","content":"' 
-                      .. msg.content:gsub('"', '\\"'):gsub('\n', '\\n') .. '"}'
-    end
-    messages_json = messages_json .. "]"
-    
-    -- Build JSON data with max_tokens parameter included
-    local json_data = '{"model":"' .. config.model 
-                    .. '","max_tokens":' .. config.max_tokens
-                    .. ',"temperature":' .. config.temperature
-                    .. ',"messages":' .. messages_json .. '}'
-    
-    -- Build curl command
-    local cmd = string.format(
-        "curl -s -o %s -w '%%{http_code}' -H 'x-api-key: %s' -H 'anthropic-version: 2023-06-01' " ..
-        "-H 'content-type: application/json' https://api.anthropic.com/v1/messages -d '%s'",
-        temp_file, config.api_key, json_data:gsub("'", "'\\''") -- Escape single quotes
-    )
-    
-    -- Execute curl command
-    local http_code = fn.system(cmd)
-    
-    -- Read response
-    local file = io.open(temp_file, "r")
-    if not file then
-        os.remove(temp_file)
-        return "Error: Failed to read API response"
-    end
-    
-    local response_text = file:read("*all")
-    file:close()
-    os.remove(temp_file)
-    
-    -- Handle response
-    if http_code == "200" then
-        -- Extract the text content using pattern matching
-        local text = response_text:match('"text":"([^"]*)"')
-        if text then
-            -- Unescape the text
-            text = text:gsub('\\"', '"'):gsub('\\\\', '\\'):gsub('\\n', '\n')
-            -- Add to history
-            table.insert(M.history, {role = "assistant", content = text})
-            return text
-        else
-            return "Error parsing API response: " .. response_text
-        end
-    else
-        return "API Error (HTTP " .. http_code .. "): " .. response_text
-    end
-end
-
--- Process user question
-function M.ask_question()
-    -- Get the last line from the buffer (user input)
-    local line_count = api.nvim_buf_line_count(M.buf)
-    local last_line = api.nvim_buf_get_lines(M.buf, line_count - 1, line_count, false)[1] or ""
-    
-    -- Extract the question (remove the prompt symbol)
-    local question = last_line:gsub("^> ", ""):gsub("^%s*(.-)%s*$", "%1")
-    
-    -- Check if question is not empty
-    if question == "" then
-        return
-    end
-    
-    -- Replace the input line with the question (without the prompt)
-    api.nvim_buf_set_lines(M.buf, line_count - 1, line_count, false, {question})
-    
-    -- Add "Thinking..." message
-    api.nvim_buf_set_lines(M.buf, line_count, line_count, false, {"", "Claude is thinking..."})
-    
-    -- Process in background to avoid blocking UI
-    vim.defer_fn(function()
-        -- Call Claude API
-        local response = M.call_claude_api(question)
-        
-        -- Get current line count (it might have changed)
-        local current_line_count = api.nvim_buf_line_count(M.buf)
-        
-        -- Find the "Thinking..." line
-        local thinking_line = -1
-        for i = 0, current_line_count - 1 do
-            local line = api.nvim_buf_get_lines(M.buf, i, i + 1, false)[1] or ""
-            if line == "Claude is thinking..." then
-                thinking_line = i
-                break
-            end
-        end
-        
-        -- Remove "Thinking..." message if found
-        if thinking_line >= 0 then
-            api.nvim_buf_set_lines(M.buf, thinking_line - 1, thinking_line + 1, false, {})
-        end
-        
-        -- Format and add the response
-        local formatted_response = {"", "Claude:"}
-        for line in response:gmatch("[^\r\n]+") do
-            table.insert(formatted_response, line)
-        end
-        table.insert(formatted_response, "")
-        
-        -- Add response to buffer
-        api.nvim_buf_set_lines(M.buf, current_line_count, current_line_count, false, formatted_response)
-        
-        -- Add new input line
-        api.nvim_buf_set_lines(M.buf, -1, -1, false, {"> "})
-        
-        -- Move cursor to input line and enter insert mode
-        if M.win and api.nvim_win_is_valid(M.win) then
-            local new_line_count = api.nvim_buf_line_count(M.buf)
-            api.nvim_win_set_cursor(M.win, {new_line_count, 2})
-            vim.cmd('startinsert!')
-        end
-    end, 100)
-end
-
--- Initialize commands
+-- Set up commands
 function M.setup()
-    vim.cmd [[
-        command! ClaudeOpen lua require('claude').open()
-        command! ClaudeClose lua require('claude').close()
-        command! ClaudeAsk lua require('claude').ask_question()
-    ]]
-    
-    vim.api.nvim_set_keymap('n', '<Space>cc', ':ClaudeOpen<CR>', 
-                          {noremap = true, silent = true})
-    vim.api.nvim_set_keymap('n', '<Space>ca', ':ClaudeAsk<CR>', 
-                          {noremap = true, silent = true})
+  vim.api.nvim_create_user_command('Claude', function()
+    M.init()
+  end, {})
+  
+  vim.api.nvim_create_user_command('ClaudeSnapshot', function()
+    local snapshot, err = M.create_snapshot()
+    if snapshot then
+      print("Snapshot created: " .. (snapshot.snapshot_path or "unknown path"))
+    else
+      print("Failed to create snapshot: " .. (err or "Unknown error"))
+    end
+  end, {})
+  
+  -- Set up key bindings
+  vim.api.nvim_set_keymap('n', '<Space>cc', '<Cmd>Claude<CR>', {noremap = true, silent = true})
 end
 
 return M

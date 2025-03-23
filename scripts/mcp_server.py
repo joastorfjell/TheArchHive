@@ -1,297 +1,275 @@
 #!/usr/bin/env python3
-# TheArchHive - Model Context Protocol (MCP) Server
-# This server connects Claude to the Arch Linux system
+
+"""
+MCP (Model Context Protocol) Server for TheArchHive
+Provides system information to Claude for better decision-making
+"""
 
 import os
-import sys
 import json
-import time
+import psutil
+import platform
 import subprocess
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import psutil  # Make sure to install with: pip install psutil
+from flask import Flask, jsonify, request
+import logging
 
-VERSION = "0.1.0"
-CONFIG_FILE = os.path.expanduser("~/.config/thearchhive/mcp_config.json")
-DEFAULT_PORT = 7424  # "ARCH" on a phone keypad
+app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # Default configuration
-DEFAULT_CONFIG = {
-    "port": DEFAULT_PORT,
-    "allowed_commands": ["pacman", "neofetch", "ls", "cat", "grep", "systemctl"],
-    "log_file": os.path.expanduser("~/.config/thearchhive/mcp.log"),
-    "debug_mode": False,
-    "auth_token": None  # Will be generated on first run
-}
+CONFIG_DIR = os.path.expanduser("~/.config/thearchhive")
+MCP_CONFIG_PATH = os.path.join(CONFIG_DIR, "mcp_config.json")
+MCP_PORT = 5678
 
-
-class MCPServer:
-    def __init__(self, config_path=CONFIG_FILE):
-        self.config_path = config_path
-        self.config = self.load_config()
-        self.ensure_auth_token()
-        self.log(f"MCP Server v{VERSION} initialized")
-
-    def load_config(self):
-        """Load configuration or create default if doesn't exist"""
-        try:
-            if os.path.exists(self.config_path):
-                with open(self.config_path, 'r') as f:
-                    config = json.load(f)
-                    # Merge with defaults for any missing keys
-                    for key, value in DEFAULT_CONFIG.items():
-                        if key not in config:
-                            config[key] = value
-                    return config
-            else:
-                # Create config directory if it doesn't exist
-                os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
-                # Create and save default config
-                with open(self.config_path, 'w') as f:
-                    json.dump(DEFAULT_CONFIG, f, indent=2)
-                return DEFAULT_CONFIG.copy()
-        except Exception as e:
-            print(f"Error loading config: {e}")
-            return DEFAULT_CONFIG.copy()
-
-    def ensure_auth_token(self):
-        """Ensure auth token exists, generate if needed"""
-        if not self.config.get("auth_token"):
-            import secrets
-            self.config["auth_token"] = secrets.token_hex(16)
-            self.save_config()
-            print(f"Generated new auth token: {self.config['auth_token']}")
-            print("Use this token to authenticate with the MCP server")
-
-    def save_config(self):
-        """Save configuration to file"""
-        try:
-            with open(self.config_path, 'w') as f:
-                json.dump(self.config, f, indent=2)
-        except Exception as e:
-            print(f"Error saving config: {e}")
-
-    def log(self, message):
-        """Log a message to the log file"""
-        log_file = self.config.get("log_file")
-        if log_file:
-            try:
-                with open(log_file, 'a') as f:
-                    f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
-            except Exception as e:
-                print(f"Error writing to log: {e}")
-        
-        if self.config.get("debug_mode"):
-            print(message)
-
-    def get_system_info(self):
-        """Get system information"""
-        try:
-            info = {
-                "timestamp": time.time(),
-                "cpu": {
-                    "percent": psutil.cpu_percent(interval=0.1),
-                    "cores": psutil.cpu_count(),
-                    "physical_cores": psutil.cpu_count(logical=False)
-                },
-                "memory": {
-                    "total": psutil.virtual_memory().total,
-                    "available": psutil.virtual_memory().available,
-                    "percent": psutil.virtual_memory().percent
-                },
-                "disk": {
-                    "total": psutil.disk_usage('/').total,
-                    "used": psutil.disk_usage('/').used,
-                    "free": psutil.disk_usage('/').free,
-                    "percent": psutil.disk_usage('/').percent
-                },
-                "swap": {
-                    "total": psutil.swap_memory().total,
-                    "used": psutil.swap_memory().used,
-                    "percent": psutil.swap_memory().percent
-                }
-            }
-            
-            # Add kernel info
-            kernel_info = subprocess.check_output(["uname", "-a"]).decode().strip()
-            info["kernel"] = kernel_info
-            
-            # Try to get pacman package count
-            try:
-                package_count = subprocess.check_output(["pacman", "-Qq", "|", "wc", "-l"], 
-                                                      shell=True).decode().strip()
-                info["packages"] = package_count
-            except:
-                info["packages"] = "unknown"
-            
-            return info
-        except Exception as e:
-            self.log(f"Error getting system info: {e}")
-            return {"error": str(e)}
-
-    def execute_command(self, command):
-        """Execute a command and return the output"""
-        # Extract the base command
-        base_cmd = command.split()[0] if command else ""
-        
-        if base_cmd not in self.config.get("allowed_commands", []):
-            return {"error": f"Command '{base_cmd}' is not allowed"}
-        
-        try:
-            self.log(f"Executing command: {command}")
-            output = subprocess.check_output(command, shell=True, timeout=10).decode()
-            return {"output": output}
-        except subprocess.TimeoutExpired:
-            return {"error": "Command timed out"}
-        except subprocess.CalledProcessError as e:
-            return {"error": f"Command failed with exit code {e.returncode}: {e.output.decode() if e.output else ''}"}
-        except Exception as e:
-            return {"error": str(e)}
-
-
-class MCPRequestHandler(BaseHTTPRequestHandler):
-    def __init__(self, *args, **kwargs):
-        self.server_instance = args[2]
-        super().__init__(*args, **kwargs)
+def ensure_config_exists():
+    """Ensure the MCP configuration file exists"""
+    if not os.path.exists(CONFIG_DIR):
+        os.makedirs(CONFIG_DIR)
     
-    def _set_headers(self, status_code=200, content_type='application/json'):
-        self.send_response(status_code)
-        self.send_header('Content-type', content_type)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        self.end_headers()
-    
-    def _authenticate(self):
-        """Check if request has valid authentication"""
-        auth_token = self.server_instance.config.get("auth_token")
-        if not auth_token:
-            return True  # No auth required if token not set
+    if not os.path.exists(MCP_CONFIG_PATH):
+        default_config = {
+            "port": MCP_PORT,
+            "snapshot_dir": os.path.expanduser("~/.local/share/thearchhive/snapshots"),
+            "enable_command_execution": False,
+            "safe_commands": ["pacman -Qi", "uname", "df", "free"]
+        }
         
-        auth_header = self.headers.get('Authorization')
-        if auth_header and auth_header.startswith('Bearer '):
-            token = auth_header.split(' ')[1]
-            return token == auth_token
-        return False
-    
-    def do_OPTIONS(self):
-        """Handle OPTIONS request (CORS preflight)"""
-        self._set_headers()
-    
-    def do_GET(self):
-        """Handle GET requests"""
-        if not self._authenticate():
-            self._set_headers(401)
-            self.wfile.write(json.dumps({"error": "Unauthorized"}).encode())
-            return
+        with open(MCP_CONFIG_PATH, 'w') as f:
+            json.dump(default_config, f, indent=2)
+        os.chmod(MCP_CONFIG_PATH, 0o600)  # Secure permissions
         
-        if self.path == '/system':
-            # Get system information
-            info = self.server_instance.get_system_info()
-            self._set_headers()
-            self.wfile.write(json.dumps(info).encode())
-        
-        elif self.path == '/status':
-            # Server status
-            status = {
-                "status": "running",
-                "version": VERSION,
-                "uptime": time.time() - self.server_instance.start_time
-            }
-            self._set_headers()
-            self.wfile.write(json.dumps(status).encode())
-        
-        else:
-            self._set_headers(404)
-            self.wfile.write(json.dumps({"error": "Not found"}).encode())
-    
-    def do_POST(self):
-        """Handle POST requests"""
-        if not self._authenticate():
-            self._set_headers(401)
-            self.wfile.write(json.dumps({"error": "Unauthorized"}).encode())
-            return
-        
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length).decode()
-        
-        try:
-            data = json.loads(body)
-        except json.JSONDecodeError:
-            self._set_headers(400)
-            self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
-            return
-        
-        if self.path == '/execute':
-            # Execute command
-            if 'command' not in data:
-                self._set_headers(400)
-                self.wfile.write(json.dumps({"error": "Command is required"}).encode())
-                return
-            
-            result = self.server_instance.execute_command(data['command'])
-            self._set_headers()
-            self.wfile.write(json.dumps(result).encode())
-        
-        elif self.path == '/claudescript':
-            # Process ClaudeScript
-            if 'script' not in data:
-                self._set_headers(400)
-                self.wfile.write(json.dumps({"error": "ClaudeScript is required"}).encode())
-                return
-            
-            # TODO: Implement ClaudeScript processing
-            self._set_headers()
-            self.wfile.write(json.dumps({"status": "ClaudeScript processing not implemented yet"}).encode())
-        
-        else:
-            self._set_headers(404)
-            self.wfile.write(json.dumps({"error": "Not found"}).encode())
+    # Ensure snapshot directory exists
+    config = load_config()
+    if not os.path.exists(config["snapshot_dir"]):
+        os.makedirs(config["snapshot_dir"])
 
+def load_config():
+    """Load MCP configuration"""
+    ensure_config_exists()
+    with open(MCP_CONFIG_PATH, 'r') as f:
+        return json.load(f)
 
-def run_server(port):
-    """Run the MCP server"""
-    server_instance = MCPServer()
-    server_instance.start_time = time.time()
-    
-    # Use server_instance as the third parameter to HTTPServer
-    server = HTTPServer(('localhost', port), 
-                        lambda *args: MCPRequestHandler(*args, server_instance))
-    
-    print(f"Starting MCP server on port {port}")
-    server_instance.log(f"Server started on port {port}")
-    
+def run_command(command):
+    """Run a system command and return its output"""
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        server_instance.log("Server stopped by user")
-        print("Server stopped by user")
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        return {
+            "success": result.returncode == 0,
+            "output": result.stdout,
+            "error": result.stderr
+        }
     except Exception as e:
-        server_instance.log(f"Server error: {e}")
-        print(f"Server error: {e}")
+        return {
+            "success": False,
+            "output": "",
+            "error": str(e)
+        }
 
-
-def main():
+@app.route('/system/info', methods=['GET'])
+def system_info():
+    """Get basic system information"""
     try:
-        # Load config to get port
-        config_path = CONFIG_FILE
-        if len(sys.argv) > 1 and sys.argv[1] == '--config':
-            if len(sys.argv) > 2:
-                config_path = sys.argv[2]
-            else:
-                print("Error: --config requires a path argument")
-                sys.exit(1)
+        # Gather system information
+        system_data = {
+            "hostname": platform.node(),
+            "os": {
+                "name": "Arch Linux",
+                "kernel": platform.release(),
+                "arch": platform.machine(),
+            },
+            "cpu": {
+                "model": subprocess.getoutput("cat /proc/cpuinfo | grep 'model name' | head -1 | cut -d':' -f2").strip(),
+                "cores": psutil.cpu_count(logical=False),
+                "threads": psutil.cpu_count(logical=True),
+                "usage_percent": psutil.cpu_percent()
+            },
+            "memory": {
+                "total_gb": round(psutil.virtual_memory().total / (1024**3), 2),
+                "used_gb": round(psutil.virtual_memory().used / (1024**3), 2),
+                "free_gb": round(psutil.virtual_memory().available / (1024**3), 2),
+                "percent_used": psutil.virtual_memory().percent
+            },
+            "disk": {
+                "total_gb": round(psutil.disk_usage('/').total / (1024**3), 2),
+                "used_gb": round(psutil.disk_usage('/').used / (1024**3), 2),
+                "free_gb": round(psutil.disk_usage('/').free / (1024**3), 2),
+                "percent_used": psutil.disk_usage('/').percent
+            }
+        }
         
-        # Initialize server to load config
-        server = MCPServer(config_path)
-        port = server.config.get('port', DEFAULT_PORT)
+        # Get GPU information if available
+        gpu_info = run_command("lspci | grep -i 'vga\\|3d\\|2d'")
+        if gpu_info["success"]:
+            system_data["gpu"] = gpu_info["output"]
         
-        # Run server
-        run_server(port)
+        return jsonify(system_data)
     except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+        return jsonify({"error": str(e)}), 500
 
+@app.route('/packages/installed', methods=['GET'])
+def installed_packages():
+    """Get list of explicitly installed packages"""
+    try:
+        result = run_command("pacman -Qe")
+        if result["success"]:
+            packages = []
+            for line in result["output"].splitlines():
+                if line.strip():
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        packages.append({
+                            "name": parts[0],
+                            "version": parts[1]
+                        })
+            return jsonify({"packages": packages})
+        else:
+            return jsonify({"error": result["error"]}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-if __name__ == "__main__":
-    main()
+@app.route('/claudescript/encode', methods=['POST'])
+def claudescript_encode():
+    """Encode data into ClaudeScript format"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+            
+        # Implement ClaudeScript encoding logic
+        claudescript = []
+        
+        # Process packages
+        if "packages" in data:
+            for pkg in data["packages"]:
+                claudescript.append(f"p:{pkg['name']}-{pkg['version']}")
+        
+        # Process system info
+        if "system" in data:
+            if "kernel" in data["system"]:
+                claudescript.append(f"k:{data['system']['kernel']}")
+            if "cpu" in data["system"]:
+                claudescript.append(f"c:{data['system']['cpu']}")
+            if "memory" in data["system"]:
+                claudescript.append(f"m:{data['system']['memory']}")
+        
+        return jsonify({"claudescript": claudescript})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/execute', methods=['POST'])
+def execute_command():
+    """Execute a command if it's allowed"""
+    config = load_config()
+    if not config.get("enable_command_execution", False):
+        return jsonify({"error": "Command execution is disabled"}), 403
+        
+    try:
+        data = request.get_json()
+        if not data or "command" not in data:
+            return jsonify({"error": "No command provided"}), 400
+            
+        command = data["command"]
+        
+        # Check if command is in the safe list or starts with a safe prefix
+        allowed = False
+        for safe_cmd in config.get("safe_commands", []):
+            if command == safe_cmd or command.startswith(safe_cmd + " "):
+                allowed = True
+                break
+        
+        if not allowed:
+            return jsonify({"error": "Command not allowed"}), 403
+            
+        result = run_command(command)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/snapshot/create', methods=['POST'])
+def create_snapshot():
+    """Create a system snapshot in ClaudeScript format"""
+    try:
+        config = load_config()
+        timestamp = subprocess.getoutput("date +%Y%m%d%H%M%S")
+        snapshot_path = os.path.join(config["snapshot_dir"], f"snapshot_{timestamp}.json")
+        
+        # Gather system information
+        system_info_response = system_info().get_json()
+        packages_response = installed_packages().get_json()
+        
+        # Combine data
+        snapshot_data = {
+            "timestamp": timestamp,
+            "system": system_info_response,
+            "packages": packages_response.get("packages", [])
+        }
+        
+        # Get ClaudeScript representation
+        claudescript_data = {
+            "packages": packages_response.get("packages", []),
+            "system": {
+                "kernel": system_info_response.get("os", {}).get("kernel", ""),
+                "cpu": system_info_response.get("cpu", {}).get("model", ""),
+                "memory": f"{system_info_response.get('memory', {}).get('total_gb', 0)}GB"
+            }
+        }
+        
+        claudescript_response = claudescript_encode()
+        if hasattr(claudescript_response, 'get_json'):
+            snapshot_data["claudescript"] = claudescript_response.get_json().get("claudescript", [])
+        
+        # Save snapshot
+        with open(snapshot_path, 'w') as f:
+            json.dump(snapshot_data, f, indent=2)
+        
+        return jsonify({
+            "success": True,
+            "snapshot_path": snapshot_path,
+            "claudescript": snapshot_data.get("claudescript", [])
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/snapshots', methods=['GET'])
+def list_snapshots():
+    """List available snapshots"""
+    try:
+        config = load_config()
+        snapshot_dir = config["snapshot_dir"]
+        snapshots = []
+        
+        if os.path.exists(snapshot_dir):
+            for filename in os.listdir(snapshot_dir):
+                if filename.startswith("snapshot_") and filename.endswith(".json"):
+                    snapshot_path = os.path.join(snapshot_dir, filename)
+                    with open(snapshot_path, 'r') as f:
+                        snapshot = json.load(f)
+                        snapshots.append({
+                            "filename": filename,
+                            "timestamp": snapshot.get("timestamp", ""),
+                            "path": snapshot_path
+                        })
+        
+        return jsonify({"snapshots": snapshots})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/config/backup', methods=['POST'])
+def create_config_backup():
+    """Create a backup of configuration files"""
+    try:
+        # This would be connected to the backup.sh script
+        result = run_command("bash ~/.config/thearchhive/scripts/backup.sh")
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    # Ensure configurations exist
+    ensure_config_exists()
+    config = load_config()
+    
+    # Start server
+    port = config.get("port", MCP_PORT)
+    app.run(host='127.0.0.1', port=port, debug=True)
+    print(f"MCP Server running on http://127.0.0.1:{port}")
