@@ -54,14 +54,6 @@ end
 local function format_message(system_prompt, user_message, conversation_history)
   local messages = {}
   
-  -- Add system message if provided
-  if system_prompt and system_prompt ~= "" then
-    table.insert(messages, {
-      role = "system",
-      content = system_prompt
-    })
-  end
-  
   -- Add conversation history
   if conversation_history then
     for _, msg in ipairs(conversation_history) do
@@ -75,7 +67,7 @@ local function format_message(system_prompt, user_message, conversation_history)
     content = user_message
   })
   
-  return messages
+  return messages, system_prompt
 end
 
 -- Safer HTTP request function with error handling
@@ -277,15 +269,16 @@ function M.send_message(user_message, display_callback, buf)
   end
   
   -- Format messages
-  local messages = format_message(system_context, user_message, M.conversation_history)
+  local messages, system_prompt = format_message(system_context, user_message, M.conversation_history)
   
-  -- Build request body
+  -- Build request body with system at the top level
   local request_body = json.encode({
     model = conf.claude_model,
     max_tokens = conf.max_tokens,
+    system = system_prompt,
     messages = messages
   })
-  
+
   -- Display thinking message
   if display_callback then
     display_callback(buf, "Thinking...")
