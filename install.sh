@@ -1,68 +1,105 @@
 #!/bin/bash
+# TheArchHive - Main Installation Script
+# This script sets up the TheArchHive environment
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="$SCRIPT_DIR/config"
-SCRIPTS_DIR="$SCRIPT_DIR/scripts"
-PACKAGES_DIR="$SCRIPT_DIR/packages"
+NVIM_CONFIG_DIR="$HOME/.config/nvim"
+CLAUDE_LUA_DIR="$CONFIG_DIR/nvim/lua/claude"
 
-# Colors
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-echo -e "${BLUE}==>${NC} Welcome to TheArchHive installation..."
-
-# Create necessary directories
-echo -e "${BLUE}==>${NC} Creating directories..."
-mkdir -p "$HOME/.config/nvim/lua"
-mkdir -p "$HOME/.TheArchHive/snapshots"
+# ASCII art banner
+display_banner() {
+    echo -e "\033[0;36m"
+    echo "  _____ _           _            _     _   _ _           "
+    echo " |_   _| |__   ___ / \   _ __ __| |__ | | | |_|_   _____ "
+    echo "   | | | '_ \ / _ \ \ | | '__/ _\` '_ \| |_| | \ \ / / _ \\"
+    echo "   | | | | | |  __/ _ \| | | (_| | | | |  _  | |\ V /  __/"
+    echo "   |_| |_| |_|\___\_/ \_\_|  \__,_|_| |_|_| |_|_| \_/ \___|"
+    echo ""
+    echo -e "\033[0m"
+}
 
 # Install base packages
-echo -e "${BLUE}==>${NC} Installing base packages..."
-if command -v pacman &> /dev/null; then
-    sudo pacman -Syu --needed --noconfirm - < "$PACKAGES_DIR/base.txt"
+install_base_packages() {
+    echo "Installing base packages..."
     
-    read -p "Install development packages? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-    # Minimal development tools only
-    sudo pacman -S --needed --noconfirm python python-pip
+    if ! command -v pacman &> /dev/null; then
+        echo "Error: This script requires pacman package manager (Arch Linux)."
+        exit 1
     fi
     
-    echo "Pacman not found. Skipping package installation."
-    echo "Please install packages manually from the package lists."
-fi
+    # Check if running as root
+    if [ "$EUID" -ne 0 ]; then
+        echo "Installing packages requires sudo privileges."
+        
+        # Check if packages file exists
+        if [ -f "$SCRIPT_DIR/packages/base.txt" ]; then
+            sudo pacman -S --needed --noconfirm $(grep -v '^#' "$SCRIPT_DIR/packages/base.txt")
+        else
+            echo "Base packages list not found. Installing minimal requirements..."
+            sudo pacman -S --needed --noconfirm neovim git curl ripgrep
+        fi
+    else
+        # Running as root
+        if [ -f "$SCRIPT_DIR/packages/base.txt" ]; then
+            pacman -S --needed --noconfirm $(grep -v '^#' "$SCRIPT_DIR/packages/base.txt")
+        else
+            echo "Base packages list not found. Installing minimal requirements..."
+            pacman -S --needed --noconfirm neovim git curl ripgrep
+        fi
+    fi
+    
+    echo "Base packages installed successfully."
+}
 
-# Install Neovim plugin manager
-echo -e "${BLUE}==>${NC} Setting up Neovim..."
-if [ ! -d "$HOME/.local/share/nvim/site/pack/packer/start/packer.nvim" ]; then
-    echo "Installing Packer.nvim..."
-    git clone --depth 1 https://github.com/wbthomason/packer.nvim \
-        "$HOME/.local/share/nvim/site/pack/packer/start/packer.nvim"
-fi
+# Configure Neovim
+configure_neovim() {
+    echo "Configuring Neovim..."
+    
+    # Create Neovim config directory if it doesn't exist
+    mkdir -p "$NVIM_CONFIG_DIR/lua"
+    
+    # Copy Neovim configuration files
+    if [ -d "$CONFIG_DIR/nvim" ]; then
+        # Copy init.vim
+        if [ -f "$CONFIG_DIR/nvim/init.vim" ]; then
+            cp "$CONFIG_DIR/nvim/init.vim" "$NVIM_CONFIG_DIR/"
+            echo "Copied init.vim configuration."
+        fi
+        
+        # Copy Lua configurations
+        if [ -d "$CONFIG_DIR/nvim/lua" ]; then
+            cp -r "$CONFIG_DIR/nvim/lua/" "$NVIM_CONFIG_DIR/"
+            echo "Copied Lua configurations."
+        fi
+    else
+        echo "Neovim configuration not found in the repository."
+        # Create minimal init.vim
+        echo "Creating minimal Neovim configuration..."
+        cat > "$NVIM_CONFIG_DIR/init.vim" << EOF
+" TheArchHive - Minimal Neovim Configuration
+set number
+set relativenumber
+set expandtab
+set tabstop=4
+set shiftwidth=4
+set smartindent
+set autoindent
+set ignorecase
+set smartcase
+set clipboard=unnamedplus
+set termguicolors
 
-# Copy Neovim configuration
-echo "Copying Neovim configuration..."
-cp -r "$CONFIG_DIR/nvim/"* "$HOME/.config/nvim/"
+" Key mappings
+let mapleader = " "
+nnoremap <leader>cc :ClaudeOpen<CR>
+nnoremap <leader>ca :ClaudeAsk<CR>
 
-# Copy Git configuration
-echo "Copying Git configuration..."
-[ -f "$CONFIG_DIR/git/gitconfig" ] && cp "$CONFIG_DIR/git/gitconfig" "$HOME/.gitconfig"
-
-# Make scripts executable
-chmod +x "$SCRIPTS_DIR"/*.sh
-
-# Run setup scripts
-"$SCRIPTS_DIR/setup-claude.sh"
-
-# Create initial snapshot
-"$SCRIPTS_DIR/snapshot.sh"
-
-echo -e "${GREEN}Installation complete!${NC}"
-echo "To start using Claude in Neovim:"
-echo "1. Open Neovim: nvim"
-echo "2. Install plugins: :PackerSync"
-echo "3. Open Claude: <Space>cc"
-echo "4. Ask a question and press <Space>ca for a response"
+" Load Lua configs
+lua require('plugins')
+EOF
+    fi
+    
+    # Install Packer
