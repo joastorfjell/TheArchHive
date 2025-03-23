@@ -10,7 +10,7 @@ local config = require("claude.config")
 local default_config = {
   mcp_url = "http://127.0.0.1:5678",
   claude_api_key = "",
-  claude_model = "claude-3-5-sonnet-20240229",
+  claude_model = "claude-3-7-sonnet-20250219",
   max_tokens = 4096,
   history_size = 10
 }
@@ -78,66 +78,132 @@ local function format_message(system_prompt, user_message, conversation_history)
   return messages
 end
 
+-- Safer HTTP request function with error handling
+local function make_http_request(url, method, options)
+  -- Ensure method is uppercase
+  method = string.upper(method or "GET")
+  options = options or {}
+  
+  -- Set defaults
+  options.timeout = options.timeout or 30000  -- 30 second timeout
+  options.headers = options.headers or {}
+  
+  -- Create a protected call to curl
+  local ok, result
+  if method == "GET" then
+    ok, result = pcall(function()
+      return curl.get({
+        url = url,
+        accept = options.accept or "application/json",
+        headers = options.headers,
+        timeout = options.timeout
+      })
+    end)
+  elseif method == "POST" then
+    ok, result = pcall(function() 
+      return curl.post({
+        url = url,
+        accept = options.accept or "application/json",
+        headers = options.headers,
+        body = options.body,
+        timeout = options.timeout
+      })
+    end)
+  else
+    return nil, "Unsupported HTTP method: " .. method
+  end
+  
+  if not ok then
+    return nil, "HTTP request failed: " .. tostring(result)
+  end
+  
+  return result, nil
+end
+
 -- Function to fetch system information from MCP
 function M.fetch_system_info()
   local conf = M.config or init_config()
-  local response = curl.get({
-    url = conf.mcp_url .. "/system/info",
-    accept = "application/json"
-  })
   
-  if response.status ~= 200 then
-    return nil, "Failed to fetch system info: " .. (response.body or "Unknown error")
+  local response, err = make_http_request(
+    conf.mcp_url .. "/system/info", 
+    "GET"
+  )
+  
+  if err or not response or response.status ~= 200 then
+    return nil, "Failed to fetch system info: " .. (err or (response and response.body or "Unknown error"))
   end
   
-  return json.decode(response.body)
+  local ok, parsed_body = pcall(json.decode, response.body)
+  if not ok then
+    return nil, "Failed to parse system info: " .. tostring(parsed_body)
+  end
+  
+  return parsed_body, nil
 end
 
 -- Function to fetch installed packages from MCP
 function M.fetch_installed_packages()
   local conf = M.config or init_config()
-  local response = curl.get({
-    url = conf.mcp_url .. "/packages/installed",
-    accept = "application/json"
-  })
   
-  if response.status ~= 200 then
-    return nil, "Failed to fetch packages: " .. (response.body or "Unknown error")
+  local response, err = make_http_request(
+    conf.mcp_url .. "/packages/installed", 
+    "GET"
+  )
+  
+  if err or not response or response.status ~= 200 then
+    return nil, "Failed to fetch packages: " .. (err or (response and response.body or "Unknown error"))
   end
   
-  return json.decode(response.body)
+  local ok, parsed_body = pcall(json.decode, response.body)
+  if not ok then
+    return nil, "Failed to parse packages: " .. tostring(parsed_body)
+  end
+  
+  return parsed_body, nil
 end
 
 -- Create a system snapshot
 function M.create_snapshot()
   local conf = M.config or init_config()
-  local response = curl.post({
-    url = conf.mcp_url .. "/snapshot/create",
-    accept = "application/json",
-    body = "{}"  -- Empty JSON object
-  })
   
-  if response.status ~= 200 then
-    return nil, "Failed to create snapshot: " .. (response.body or "Unknown error")
+  local response, err = make_http_request(
+    conf.mcp_url .. "/snapshot/create", 
+    "POST", 
+    {body = "{}"}  -- Empty JSON object
+  )
+  
+  if err or not response or response.status ~= 200 then
+    return nil, "Failed to create snapshot: " .. (err or (response and response.body or "Unknown error"))
   end
   
-  return json.decode(response.body)
+  local ok, parsed_body = pcall(json.decode, response.body)
+  if not ok then
+    return nil, "Failed to parse snapshot response: " .. tostring(parsed_body)
+  end
+  
+  return parsed_body, nil
 end
 
 -- Function to execute a command via MCP (if enabled)
 function M.execute_command(command)
   local conf = M.config or init_config()
-  local response = curl.post({
-    url = conf.mcp_url .. "/execute",
-    accept = "application/json",
-    body = json.encode({ command = command })
-  })
   
-  if response.status ~= 200 then
-    return nil, "Failed to execute command: " .. (response.body or "Unknown error")
+  local response, err = make_http_request(
+    conf.mcp_url .. "/execute", 
+    "POST", 
+    {body = json.encode({ command = command })}
+  )
+  
+  if err or not response or response.status ~= 200 then
+    return nil, "Failed to execute command: " .. (err or (response and response.body or "Unknown error"))
   end
   
-  return json.decode(response.body)
+  local ok, parsed_body = pcall(json.decode, response.body)
+  if not ok then
+    return nil, "Failed to parse command response: " .. tostring(parsed_body)
+  end
+  
+  return parsed_body, nil
 end
 
 -- Generate system context for Claude
@@ -145,31 +211,34 @@ function M.generate_system_context()
   local system_info, err_info = M.fetch_system_info()
   local packages, err_pkg = M.fetch_installed_packages()
   
-  if not system_info then
-    return "System information unavailable: " .. (err_info or "Unknown error")
-  end
-  
   local context = "You are Claude, an AI assistant integrated into TheArchHive for Arch Linux. "
     .. "You're running inside Neovim and have access to system information through the MCP server. "
     .. "You can help configure, optimize, and troubleshoot Arch Linux systems.\n\n"
     .. "Current system information:\n"
-    .. "- Hostname: " .. (system_info.hostname or "Unknown") .. "\n"
-    .. "- Kernel: " .. (system_info.os and system_info.os.kernel or "Unknown") .. "\n"
-    .. "- CPU: " .. (system_info.cpu and system_info.cpu.model or "Unknown") .. " ("
-    .. (system_info.cpu and system_info.cpu.cores or 0) .. " cores, "
-    .. (system_info.cpu and system_info.cpu.threads or 0) .. " threads)\n"
-    .. "- Memory: " .. (system_info.memory and system_info.memory.total_gb or 0) .. "GB total, "
-    .. (system_info.memory and system_info.memory.used_gb or 0) .. "GB used ("
-    .. (system_info.memory and system_info.memory.percent_used or 0) .. "%)\n"
-    .. "- Disk: " .. (system_info.disk and system_info.disk.total_gb or 0) .. "GB total, "
-    .. (system_info.disk and system_info.disk.used_gb or 0) .. "GB used ("
-    .. (system_info.disk and system_info.disk.percent_used or 0) .. "%)\n"
   
-  if system_info.gpu then
-    context = context .. "- GPU: " .. system_info.gpu .. "\n"
+  if not system_info then
+    context = context .. "System information unavailable: " .. (err_info or "Unknown error") .. "\n"
+  else
+    context = context .. "- Hostname: " .. (system_info.hostname or "Unknown") .. "\n"
+      .. "- Kernel: " .. (system_info.os and system_info.os.kernel or "Unknown") .. "\n"
+      .. "- CPU: " .. (system_info.cpu and system_info.cpu.model or "Unknown") .. " ("
+      .. (system_info.cpu and system_info.cpu.cores or 0) .. " cores, "
+      .. (system_info.cpu and system_info.cpu.threads or 0) .. " threads)\n"
+      .. "- Memory: " .. (system_info.memory and system_info.memory.total_gb or 0) .. "GB total, "
+      .. (system_info.memory and system_info.memory.used_gb or 0) .. "GB used ("
+      .. (system_info.memory and system_info.memory.percent_used or 0) .. "%)\n"
+      .. "- Disk: " .. (system_info.disk and system_info.disk.total_gb or 0) .. "GB total, "
+      .. (system_info.disk and system_info.disk.used_gb or 0) .. "GB used ("
+      .. (system_info.disk and system_info.disk.percent_used or 0) .. "%)\n"
+    
+    if system_info.gpu then
+      context = context .. "- GPU: " .. system_info.gpu .. "\n"
+    end
   end
   
-  if packages and packages.packages then
+  if not packages then
+    context = context .. "\nPackage information unavailable: " .. (err_pkg or "Unknown error") .. "\n"
+  elseif packages.packages then
     context = context .. "\nSome key installed packages:\n"
     -- Only show a subset of important packages to avoid making the context too large
     local important_packages = {"linux", "base", "base-devel", "neovim", "vim", "emacs", "xorg", 
@@ -195,110 +264,141 @@ function M.generate_system_context()
   return context
 end
 
--- Function to send message to Claude API
+-- Function to send message to Claude API (with better error handling)
 function M.send_message(user_message, display_callback, buf)
   local conf = M.config or init_config()
-
+  
   -- Generate system context
   local system_context = M.generate_system_context()
-
+  
   -- Initialize conversation history if not exists
   if not M.conversation_history then
     M.conversation_history = {}
   end
-
-  -- Format messages - We need to separate system message from regular messages
-  local messages = {}
-
-  -- Add conversation history
-  if M.conversation_history then
-    for _, msg in ipairs(M.conversation_history) do
-      table.insert(messages, msg)
-    end
-  end
-
-  -- Add the current user message
-  table.insert(messages, {
-    role = "user",
-    content = user_message
-  })
-
-  -- Build request body - Note that system message is a top-level parameter, not part of messages array
+  
+  -- Format messages
+  local messages = format_message(system_context, user_message, M.conversation_history)
+  
+  -- Build request body
   local request_body = json.encode({
     model = conf.claude_model,
     max_tokens = conf.max_tokens,
-    system = system_context, -- System message goes here as a top-level parameter
-    messages = messages     -- Regular conversation messages here
+    messages = messages
   })
-
+  
   -- Display thinking message
   if display_callback then
     display_callback(buf, "Thinking...")
   end
-
-  -- Make API request
-  local response = curl.post({
-    url = "https://api.anthropic.com/v1/messages",
-    headers = {
-      ["x-api-key"] = conf.claude_api_key,
-      ["anthropic-version"] = "2023-06-01",
-      ["content-type"] = "application/json"
-    },
-    body = request_body
-  })
-
-  if response.status ~= 200 then
-    local error_msg = "Error: " .. (response.body or "Unknown error")
+  
+  -- Send API request with error handling
+  local response, err = make_http_request(
+    "https://api.anthropic.com/v1/messages",
+    "POST",
+    {
+      headers = {
+        ["x-api-key"] = conf.claude_api_key,
+        ["anthropic-version"] = "2023-06-01",
+        ["content-type"] = "application/json"
+      },
+      body = request_body
+    }
+  )
+  
+  if err or not response or response.status ~= 200 then
+    local error_msg = "Error: " .. (err or (response and response.body or "Unknown error"))
     if display_callback then
       display_callback(buf, error_msg)
     end
     return nil, error_msg
   end
-
-  local result = json.decode(response.body)
-
+  
+  -- Parse the response
+  local ok, result = pcall(json.decode, response.body)
+  if not ok then
+    local error_msg = "Error parsing response: " .. tostring(result)
+    if display_callback then
+      display_callback(buf, error_msg)
+    end
+    return nil, error_msg
+  end
+  
+  -- Check if result has the expected structure
+  if not result or not result.content or not result.content[1] or not result.content[1].text then
+    local error_msg = "Unexpected response format"
+    if display_callback then
+      display_callback(buf, error_msg)
+    end
+    return nil, error_msg
+  end
+  
+  -- Get the actual response text
+  local response_text = result.content[1].text
+  
   -- Add message to conversation history
   table.insert(M.conversation_history, {
     role = "user",
     content = user_message
   })
-
+  
   table.insert(M.conversation_history, {
     role = "assistant",
-    content = result.content[1].text
+    content = response_text
   })
-
+  
   -- Limit history size
   while #M.conversation_history > conf.history_size * 2 do
     table.remove(M.conversation_history, 1)
   end
-
+  
   -- Display response
   if display_callback then
-    display_callback(buf, result.content[1].text)
+    display_callback(buf, response_text)
   end
-
-  return result.content[1].text
+  
+  return response_text
 end
 
--- Display message in buffer
+-- Display message in buffer safely
 function M.display_message(buf, message)
+  -- Check if buffer exists and is valid
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    print("Error: Buffer is not valid")
     return
   end
   
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, {})
+  -- Ensure message is a string
+  message = tostring(message or "")
   
+  -- Split message into lines
   local lines = {}
   for line in message:gmatch("[^\r\n]+") do
     table.insert(lines, line)
   end
   
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  -- If no lines, add an empty one
+  if #lines == 0 then
+    lines = {""}
+  end
+  
+  -- Use pcall to safely set buffer lines
+  local ok, err = pcall(function()
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  end)
+  
+  if not ok then
+    print("Error displaying message: " .. err)
+  end
 end
 
 -- Function to handle user input
 function M.handle_input(buf, win)
+  -- Check if buffer exists and is valid
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    print("Error: Buffer is not valid")
+    return
+  end
+  
   local prompt = "Ask Claude: "
   local input = vim.fn.input({
     prompt = prompt,
@@ -312,12 +412,19 @@ function M.handle_input(buf, win)
   -- Display user question
   M.display_message(buf, "You: " .. input .. "\n\nClaude: ")
   
-  -- Send to Claude API
-  M.send_message(input, function(buffer, response)
-    if buffer and vim.api.nvim_buf_is_valid(buffer) then
-      M.display_message(buffer, "You: " .. input .. "\n\nClaude: " .. response)
-    end
-  end, buf)
+  -- Send to Claude API with pcall for safety
+  local ok, result_or_err = pcall(function()
+    return M.send_message(input, function(buffer, response)
+      if buffer and vim.api.nvim_buf_is_valid(buffer) then
+        M.display_message(buffer, "You: " .. input .. "\n\nClaude: " .. response)
+      end
+    end, buf)
+  end)
+  
+  if not ok then
+    -- Handle error
+    M.display_message(buf, "You: " .. input .. "\n\nError communicating with Claude: " .. tostring(result_or_err))
+  end
 end
 
 -- Initialize Claude
@@ -325,8 +432,14 @@ function M.init()
   -- Load configuration
   init_config()
   
-  -- Create buffer and window
-  local buf, win = init_window()
+  -- Create buffer and window with error handling
+  local ok, buf_win = pcall(init_window)
+  if not ok then
+    print("Error initializing Claude window: " .. tostring(buf_win))
+    return nil, nil
+  end
+  
+  local buf, win = buf_win[1], buf_win[2]
   
   -- Initial message
   local welcome_msg = [[
@@ -345,9 +458,15 @@ function M.init()
   M.display_message(buf, welcome_msg)
   
   -- Set up keymaps
-  vim.api.nvim_buf_set_keymap(buf, 'n', '<Space>ca', 
-    [[<Cmd>lua require('claude').handle_input(]] .. buf .. [[, ]] .. win .. [[)<CR>]], 
-    {noremap = true, silent = true})
+  local ok, err = pcall(function()
+    vim.api.nvim_buf_set_keymap(buf, 'n', '<Space>ca', 
+      string.format([[<Cmd>lua require('claude').handle_input(%d, %d)<CR>]], buf, win), 
+      {noremap = true, silent = true})
+  end)
+  
+  if not ok then
+    print("Error setting up keymaps: " .. tostring(err))
+  end
   
   return buf, win
 end
@@ -355,15 +474,24 @@ end
 -- Set up commands
 function M.setup()
   vim.api.nvim_create_user_command('Claude', function()
-    M.init()
+    local ok, result = pcall(M.init)
+    if not ok then
+      print("Error running Claude: " .. tostring(result))
+    end
   end, {})
   
   vim.api.nvim_create_user_command('ClaudeSnapshot', function()
-    local snapshot, err = M.create_snapshot()
-    if snapshot then
-      print("Snapshot created: " .. (snapshot.snapshot_path or "unknown path"))
-    else
-      print("Failed to create snapshot: " .. (err or "Unknown error"))
+    local ok, result_or_err = pcall(function()
+      local snapshot, err = M.create_snapshot()
+      if snapshot then
+        print("Snapshot created: " .. (snapshot.snapshot_path or "unknown path"))
+      else
+        print("Failed to create snapshot: " .. (err or "Unknown error"))
+      end
+    end)
+    
+    if not ok then
+      print("Error creating snapshot: " .. tostring(result_or_err))
     end
   end, {})
   

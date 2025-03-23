@@ -1,262 +1,462 @@
 #!/bin/bash
-# TheArchHive Configuration Backup System
-# ~/.config/thearchhive/scripts/backup.sh
+# TheArchHive Backup Script
+# Handles configuration backups using Git
 
-set -e
+set -e  # Exit on error
 
-# Default configuration
-BACKUP_REPO="$HOME/.local/share/thearchhive/backups"
-CONFIG_DIR="$HOME/.config"
-LOG_FILE="$BACKUP_REPO/backup.log"
-GIT_REMOTE=""
+# Configuration
+CONFIG_DIR="$HOME/.config/thearchhive"
+CONFIG_FILE="$CONFIG_DIR/backup_config.json"
+DEFAULT_BACKUP_REPO="$HOME/.local/share/thearchhive/backups"
 
-# Configuration files to track
-CONFIG_FILES=(
-  "$HOME/.config/nvim/init.vim"
-  "$HOME/.config/nvim/lua/claude"
-  "$HOME/.config/thearchhive"
-  "$HOME/.bashrc"
-  "$HOME/.zshrc"
-  "$HOME/.xinitrc"
-  "$HOME/.Xresources"
-)
+# Terminal colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-# Ensure backup repo exists
-setup_repo() {
-  if [ ! -d "$BACKUP_REPO" ]; then
-    mkdir -p "$BACKUP_REPO"
-    cd "$BACKUP_REPO"
-    git init
-    echo "# TheArchHive Configuration Backup" > README.md
-    git add README.md
-    git config user.name "TheArchHive"
-    git config user.email "thearchhive@localhost"
-    git commit -m "Initial commit"
-    echo "Created backup repository at $BACKUP_REPO"
+# Ensure required tools are available
+check_requirements() {
+  if ! command -v git &> /dev/null; then
+    echo -e "${RED}Error: git is not installed. Please install it first.${NC}"
+    exit 1
+  fi
+  
+  if ! command -v jq &> /dev/null; then
+    echo -e "${RED}Error: jq is not installed. Please install it first.${NC}"
+    exit 1
   fi
 }
 
 # Load configuration
 load_config() {
-  CONFIG_FILE="$HOME/.config/thearchhive/backup_config.json"
-  if [ -f "$CONFIG_FILE" ]; then
-    if command -v jq &> /dev/null; then
-      BACKUP_REPO=$(jq -r '.backup_repo // "'"$BACKUP_REPO"'"' "$CONFIG_FILE")
-      GIT_REMOTE=$(jq -r '.git_remote // ""' "$CONFIG_FILE")
-      
-      # Parse config files array if it exists
-      if jq -e '.config_files' "$CONFIG_FILE" &> /dev/null; then
-        readarray -t CONFIG_FILES < <(jq -r '.config_files[]' "$CONFIG_FILE")
-      fi
-    else
-      echo "Warning: jq not installed, using default configuration"
-    fi
-  fi
-}
-
-# Create default configuration if it doesn't exist
-create_default_config() {
-  CONFIG_DIR="$HOME/.config/thearchhive"
-  CONFIG_FILE="$CONFIG_DIR/backup_config.json"
-  
-  if [ ! -d "$CONFIG_DIR" ]; then
-    mkdir -p "$CONFIG_DIR"
-  fi
-  
+  # Create default config if it doesn't exist
   if [ ! -f "$CONFIG_FILE" ]; then
+    echo -e "${YELLOW}Configuration file not found. Creating default configuration.${NC}"
+    mkdir -p "$CONFIG_DIR"
+    
     cat > "$CONFIG_FILE" << EOF
 {
-  "backup_repo": "$HOME/.local/share/thearchhive/backups",
+  "backup_repo": "$DEFAULT_BACKUP_REPO",
   "git_remote": "",
   "config_files": [
-    "$HOME/.config/nvim/init.vim",
-    "$HOME/.config/nvim/lua/claude",
-    "$HOME/.config/thearchhive",
-    "$HOME/.bashrc",
-    "$HOME/.zshrc",
-    "$HOME/.xinitrc",
-    "$HOME/.Xresources"
+    "~/.config/nvim/init.vim",
+    "~/.config/nvim/lua/claude",
+    "~/.config/thearchhive",
+    "~/.bashrc",
+    "~/.zshrc",
+    "~/.xinitrc",
+    "~/.Xresources"
   ]
 }
 EOF
-    echo "Created default backup configuration at $CONFIG_FILE"
   fi
+  
+  # Verify config file is valid JSON
+  if ! jq -e . "$CONFIG_FILE" > /dev/null 2>&1; then
+    echo -e "${RED}Error: Invalid configuration file format.${NC}"
+    exit 1
+  fi
+  
+  # Load config values
+  BACKUP_REPO=$(jq -r '.backup_repo' "$CONFIG_FILE")
+  GIT_REMOTE=$(jq -r '.git_remote' "$CONFIG_FILE")
+  CONFIG_FILES=$(jq -r '.config_files[]' "$CONFIG_FILE")
+  
+  # Expand ~ in backup repo path
+  BACKUP_REPO="${BACKUP_REPO/#\~/$HOME}"
+  
+  echo -e "${BLUE}Configuration loaded:${NC}"
+  echo -e "  Backup repository: ${BACKUP_REPO}"
+  echo -e "  Git remote: ${GIT_REMOTE:-None}"
+  echo -e "  Files to backup: $(echo "$CONFIG_FILES" | wc -l)"
 }
 
-# Log function
-log() {
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
-}
-
-# Backup a single file
-backup_file() {
-  local src="$1"
-  local filename=$(basename "$src")
-  local target_dir="$BACKUP_REPO/$(dirname "$src" | sed "s|^$HOME|home|")"
-  local target="$target_dir/$filename"
-  
-  # Skip if source doesn't exist
-  if [ ! -e "$src" ]; then
-    log "Skipping $src - file does not exist"
-    return
-  fi
-  
-  # Create target directory if needed
-  mkdir -p "$target_dir"
-  
-  # Copy file or directory
-  if [ -d "$src" ]; then
-    rsync -a --delete "$src/" "$target/"
-    log "Backed up directory $src"
-  else
-    cp "$src" "$target"
-    log "Backed up file $src"
-  fi
-  
-  # Add to git
-  cd "$BACKUP_REPO"
-  git add "$target" || log "Failed to add $target to git"
-}
-
-# Commit changes
-commit_changes() {
-  cd "$BACKUP_REPO"
-  if git diff --staged --quiet; then
-    log "No changes to commit"
-    return
-  fi
-  
-  # Get system info for commit message
-  KERNEL=$(uname -r)
-  HOSTNAME=$(hostname)
-  TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
-  
-  # Commit changes
-  git commit -m "Backup from $HOSTNAME on $TIMESTAMP (kernel: $KERNEL)"
-  log "Committed changes to backup repository"
-  
-  # Push to remote if configured
-  if [ -n "$GIT_REMOTE" ]; then
-    if ! git remote | grep -q "^origin$"; then
+# Initialize backup repository if it doesn't exist
+initialize_repo() {
+  if [ ! -d "$BACKUP_REPO" ]; then
+    echo -e "${YELLOW}Backup repository doesn't exist. Creating it now.${NC}"
+    mkdir -p "$BACKUP_REPO"
+    
+    # Initialize Git repository
+    cd "$BACKUP_REPO"
+    git init
+    
+    # Create initial structure
+    mkdir -p config
+    
+    # Add .gitignore
+    cat > .gitignore << EOF
+# TheArchHive Backup Repository
+# Ignore temporary files
+*~
+*.swp
+*.swo
+.DS_Store
+EOF
+    
+    # Initial commit
+    git add .gitignore
+    git config --local user.name "TheArchHive"
+    git config --local user.email "thearchhive@localhost"
+    git commit -m "Initialize backup repository"
+    
+    echo -e "${GREEN}Backup repository initialized successfully.${NC}"
+    
+    # Set up Git remote if configured
+    if [ -n "$GIT_REMOTE" ]; then
+      echo -e "${BLUE}Setting up Git remote...${NC}"
       git remote add origin "$GIT_REMOTE"
+      echo -e "${GREEN}Git remote configured.${NC}"
     fi
-    git push origin master || log "Failed to push to remote"
+  else
+    # Ensure it's a git repository
+    if [ ! -d "$BACKUP_REPO/.git" ]; then
+      echo -e "${YELLOW}Directory exists but is not a Git repository. Initializing...${NC}"
+      cd "$BACKUP_REPO"
+      git init
+      git config --local user.name "TheArchHive"
+      git config --local user.email "thearchhive@localhost"
+      
+      # Create initial commit if needed
+      if [ -z "$(git log -1 --oneline 2>/dev/null)" ]; then
+        touch README.md
+        echo "# TheArchHive Backup Repository" > README.md
+        echo "Created on $(date)" >> README.md
+        git add README.md
+        git commit -m "Initialize backup repository"
+      fi
+      
+      # Set up Git remote if configured
+      if [ -n "$GIT_REMOTE" ]; then
+        git remote add origin "$GIT_REMOTE"
+      fi
+      
+      echo -e "${GREEN}Git repository initialized in existing directory.${NC}"
+    fi
+  fi
+}
+
+# Backup configuration files
+backup_files() {
+  echo -e "${BLUE}Starting backup process...${NC}"
+  
+  # Initialize backup repository if needed
+  initialize_repo
+  
+  # Change to backup repository
+  cd "$BACKUP_REPO"
+  
+  # Backup each configuration file
+  for file in $CONFIG_FILES; do
+    # Expand ~ in paths
+    expanded_file="${file/#\~/$HOME}"
+    
+    # Check if file exists
+    if [ ! -e "$expanded_file" ]; then
+      echo -e "${YELLOW}Warning: $file does not exist, skipping.${NC}"
+      continue
+    fi
+    
+    # Determine backup path
+    backup_path="$BACKUP_REPO"
+    
+    # Extract directory name for organization
+    if [[ "$file" == ~/.config/* ]]; then
+      # For files in ~/.config, keep the structure
+      rel_path="${file/#\~\/\.config\//config\/}"
+      backup_path="$BACKUP_REPO/$rel_path"
+    else
+      # For other files, use the basename
+      base_name=$(basename "$file")
+      backup_path="$BACKUP_REPO/home/$base_name"
+    fi
+    
+    # Create target directory
+    mkdir -p "$(dirname "$backup_path")"
+    
+    # Copy file or directory
+    if [ -d "$expanded_file" ]; then
+      # It's a directory, ensure the target directory exists
+      mkdir -p "$backup_path"
+      
+      # Rsync to copy only changed files
+      rsync -a --delete "$expanded_file/" "$backup_path/"
+      echo -e "${GREEN}Backed up directory: $file${NC}"
+    else
+      # It's a file, copy it
+      cp "$expanded_file" "$backup_path"
+      echo -e "${GREEN}Backed up file: $file${NC}"
+    fi
+    
+    # Add to git
+    git add "$backup_path"
+  done
+  
+  # Commit changes if there are any
+  if [ -n "$(git status --porcelain)" ]; then
+    git commit -m "Backup: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo -e "${GREEN}Committed changes to git repository.${NC}"
+    
+    # Push to remote if configured
+    if [ -n "$GIT_REMOTE" ]; then
+      echo -e "${BLUE}Pushing changes to remote...${NC}"
+      if git push origin master 2>/dev/null || git push origin main 2>/dev/null; then
+        echo -e "${GREEN}Pushed changes to remote repository.${NC}"
+      else
+        echo -e "${YELLOW}Warning: Failed to push to remote. Check your connection or repository permissions.${NC}"
+      fi
+    fi
+  else
+    echo -e "${BLUE}No changes to commit.${NC}"
   fi
 }
 
 # Display backup status
-display_status() {
-  cd "$BACKUP_REPO"
-  echo "================ TheArchHive Backup Status ================"
-  echo "Backup repository: $BACKUP_REPO"
-  echo "Last backup: $(git log -1 --format="%cd" --date=local)"
-  echo "Total backups: $(git rev-list --count HEAD)"
-  
-  if [ -n "$GIT_REMOTE" ]; then
-    echo "Remote repository: $GIT_REMOTE"
-    LOCAL=$(git rev-parse @)
-    REMOTE=$(git rev-parse @{u} 2>/dev/null || echo "not configured")
-    
-    if [ "$LOCAL" = "$REMOTE" ]; then
-      echo "Remote status: In sync"
-    else
-      echo "Remote status: Not in sync"
-    fi
-  else
-    echo "Remote repository: Not configured"
+show_status() {
+  # Check if backup repository exists
+  if [ ! -d "$BACKUP_REPO" ]; then
+    echo -e "${YELLOW}Backup repository doesn't exist. Run backup to create it.${NC}"
+    return
   fi
   
-  echo "Tracked configuration files:"
-  for file in "${CONFIG_FILES[@]}"; do
-    if [ -e "$file" ]; then
-      echo "  ✓ $file"
+  # Change to backup repository
+  cd "$BACKUP_REPO"
+  
+  # Show git status
+  echo -e "${BLUE}Backup repository status:${NC}"
+  git status -s
+  
+  # Show last 5 commits
+  echo -e "\n${BLUE}Recent backup history:${NC}"
+  git log -5 --oneline
+  
+  # Check remote status if configured
+  if [ -n "$GIT_REMOTE" ]; then
+    echo -e "\n${BLUE}Remote repository status:${NC}"
+    git remote -v
+    
+    # Check for unpushed commits
+    local_commits=$(git rev-list --count HEAD)
+    remote_commits=$(git rev-list --count origin/$(git branch --show-current) 2>/dev/null || echo 0)
+    
+    if [ "$local_commits" -gt "$remote_commits" ]; then
+      echo -e "${YELLOW}You have $(($local_commits - $remote_commits)) unpushed commits.${NC}"
     else
-      echo "  ✗ $file (missing)"
+      echo -e "${GREEN}Repository is in sync with remote.${NC}"
+    fi
+  fi
+}
+
+# Restore files from backup
+restore_files() {
+  local target_dir="$1"
+  
+  # If no target directory specified, use home directory
+  if [ -z "$target_dir" ]; then
+    target_dir="$HOME"
+  fi
+  
+  # Check if backup repository exists
+  if [ ! -d "$BACKUP_REPO" ]; then
+    echo -e "${RED}Error: Backup repository doesn't exist.${NC}"
+    exit 1
+  fi
+  
+  echo -e "${BLUE}Restoring configuration files to ${target_dir}...${NC}"
+  
+  # Process each config file
+  for file in $CONFIG_FILES; do
+    # Determine backup path
+    backup_path=""
+    restored_path=""
+    
+    # Expand ~ in paths
+    expanded_file="${file/#\~/$HOME}"
+    expanded_file="${expanded_file/#$HOME/$target_dir}"
+    
+    # Find the backup based on path patterns
+    if [[ "$file" == ~/.config/* ]]; then
+      # For files in ~/.config
+      rel_path="${file/#\~\/\.config\//config\/}"
+      backup_path="$BACKUP_REPO/$rel_path"
+      restored_path="$expanded_file"
+    else
+      # For other files in home
+      base_name=$(basename "$file")
+      backup_path="$BACKUP_REPO/home/$base_name"
+      restored_path="$expanded_file"
+    fi
+    
+    # Check if backup exists
+    if [ ! -e "$backup_path" ]; then
+      echo -e "${YELLOW}Warning: Backup for $file not found, skipping.${NC}"
+      continue
+    fi
+    
+    # Create target directory
+    mkdir -p "$(dirname "$restored_path")"
+    
+    # Copy file or directory
+    if [ -d "$backup_path" ]; then
+      # It's a directory, ensure the target directory exists
+      mkdir -p "$restored_path"
+      
+      # Rsync to copy only changed files
+      rsync -a --delete "$backup_path/" "$restored_path/"
+      echo -e "${GREEN}Restored directory: $file to $restored_path${NC}"
+    else
+      # It's a file, copy it
+      cp "$backup_path" "$restored_path"
+      echo -e "${GREEN}Restored file: $file to $restored_path${NC}"
     fi
   done
-  echo "=========================================================="
+  
+  echo -e "${GREEN}Restoration complete!${NC}"
+}
+
+# Add a file to the backup config
+add_file() {
+  local file="$1"
+  
+  if [ -z "$file" ]; then
+    echo -e "${RED}Error: No file specified.${NC}"
+    exit 1
+  fi
+  
+  # Standardize path with ~
+  if [[ "$file" == $HOME* ]]; then
+    file="~${file#$HOME}"
+  fi
+  
+  # Check if file is already in the config
+  if jq -e ".config_files | index(\"$file\")" "$CONFIG_FILE" > /dev/null; then
+    echo -e "${YELLOW}File $file is already in the backup configuration.${NC}"
+    return
+  fi
+  
+  # Add file to config
+  jq --arg file "$file" '.config_files += [$file]' "$CONFIG_FILE" > "$CONFIG_FILE.tmp"
+  mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+  
+  echo -e "${GREEN}Added $file to backup configuration.${NC}"
+  
+  # Ask if user wants to backup now
+  read -p "Do you want to backup this file now? (y/n) " answer
+  if [[ "$answer" =~ ^[Yy]$ ]]; then
+    backup_files
+  fi
+}
+
+# Remove a file from the backup config
+remove_file() {
+  local file="$1"
+  
+  if [ -z "$file" ]; then
+    echo -e "${RED}Error: No file specified.${NC}"
+    exit 1
+  fi
+  
+  # Standardize path with ~
+  if [[ "$file" == $HOME* ]]; then
+    file="~${file#$HOME}"
+  fi
+  
+  # Check if file is in the config
+  if ! jq -e ".config_files | index(\"$file\")" "$CONFIG_FILE" > /dev/null; then
+    echo -e "${YELLOW}File $file is not in the backup configuration.${NC}"
+    return
+  fi
+  
+  # Remove file from config
+  jq --arg file "$file" '.config_files -= [$file]' "$CONFIG_FILE" > "$CONFIG_FILE.tmp"
+  mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+  
+  echo -e "${GREEN}Removed $file from backup configuration.${NC}"
+}
+
+# List all files in backup config
+list_files() {
+  echo -e "${BLUE}Files in backup configuration:${NC}"
+  jq -r '.config_files[]' "$CONFIG_FILE" | sort
+}
+
+# Set or update git remote
+set_remote() {
+  local remote="$1"
+  
+  if [ -z "$remote" ]; then
+    echo -e "${RED}Error: No remote URL specified.${NC}"
+    exit 1
+  fi
+  
+  # Update config file
+  jq --arg remote "$remote" '.git_remote = $remote' "$CONFIG_FILE" > "$CONFIG_FILE.tmp"
+  mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+  
+  # Set remote in git repo if it exists
+  if [ -d "$BACKUP_REPO/.git" ]; then
+    cd "$BACKUP_REPO"
+    
+    # Check if remote already exists
+    if git remote | grep -q "^origin$"; then
+      git remote set-url origin "$remote"
+      echo -e "${GREEN}Updated git remote URL.${NC}"
+    else
+      git remote add origin "$remote"
+      echo -e "${GREEN}Added git remote URL.${NC}"
+    fi
+  fi
+  
+  echo -e "${GREEN}Git remote set to: $remote${NC}"
 }
 
 # Main function
 main() {
-  # Create default config if it doesn't exist
-  create_default_config
+  # Check requirements
+  check_requirements
   
   # Load configuration
   load_config
   
-  # Ensure log directory exists
-  mkdir -p "$(dirname "$LOG_FILE")"
+  # Process command
+  command="$1"
   
-  # Setup repository
-  setup_repo
-  
-  # Process command line arguments
-  case "$1" in
-    status)
-      display_status
+  case "$command" in
+    backup|b)
+      backup_files
       ;;
-    add)
-      if [ -z "$2" ]; then
-        echo "Usage: backup.sh add <file_or_directory>"
-        exit 1
-      fi
-      
-      # Add file to configuration
-      FILE_TO_ADD=$(realpath "$2")
-      CONFIG_FILE="$HOME/.config/thearchhive/backup_config.json"
-      
-      if command -v jq &> /dev/null; then
-        NEW_CONFIG=$(jq ".config_files += [\"$FILE_TO_ADD\"]" "$CONFIG_FILE")
-        echo "$NEW_CONFIG" > "$CONFIG_FILE"
-        echo "Added $FILE_TO_ADD to tracked files"
-        
-        # Reload config and backup the new file
-        load_config
-        backup_file "$FILE_TO_ADD"
-        commit_changes
-      else
-        echo "Error: jq not installed, can't modify configuration"
-        exit 1
-      fi
+    status|s)
+      show_status
       ;;
-    setup-remote)
-      if [ -z "$2" ]; then
-        echo "Usage: backup.sh setup-remote <git_remote_url>"
-        exit 1
-      fi
-      
-      # Set git remote
-      CONFIG_FILE="$HOME/.config/thearchhive/backup_config.json"
-      
-      if command -v jq &> /dev/null; then
-        NEW_CONFIG=$(jq ".git_remote = \"$2\"" "$CONFIG_FILE")
-        echo "$NEW_CONFIG" > "$CONFIG_FILE"
-        
-        # Set up git remote
-        cd "$BACKUP_REPO"
-        if git remote | grep -q "^origin$"; then
-          git remote set-url origin "$2"
-        else
-          git remote add origin "$2"
-        fi
-        
-        echo "Set remote repository to $2"
-      else
-        echo "Error: jq not installed, can't modify configuration"
-        exit 1
-      fi
+    restore|r)
+      restore_files "$2"
       ;;
-    *)
-      # Default action: backup files
-      log "Starting backup"
-      
-      for file in "${CONFIG_FILES[@]}"; do
-        backup_file "$file"
-      done
-      
-      commit_changes
-      log "Backup completed"
+    add|a)
+      add_file "$2"
+      ;;
+    remove|rm)
+      remove_file "$2"
+      ;;
+    list|l)
+      list_files
+      ;;
+    remote)
+      set_remote "$2"
+      ;;
+    help|h|*)
+      echo "Usage: $0 <command> [options]"
+      echo
+      echo "Commands:"
+      echo "  backup, b             Backup all configured files"
+      echo "  status, s             Show backup repository status"
+      echo "  restore, r [target]   Restore files (optionally to target directory)"
+      echo "  add, a <file>         Add a file to backup configuration"
+      echo "  remove, rm <file>     Remove a file from backup configuration"
+      echo "  list, l               List all files in backup configuration"
+      echo "  remote <url>          Set or update git remote URL"
+      echo "  help, h               Show this help message"
       ;;
   esac
 }
