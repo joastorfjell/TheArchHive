@@ -33,98 +33,7 @@ local function init_config()
   return M.config
 end
 
--- Initialize Claude
-function M.init()
-  -- Load configuration
-  init_config()
-  
-  -- Create buffer and window with error handling
-  local ok, result = pcall(init_window)
-  if not ok then
-    print("Error initializing Claude window: " .. tostring(result))
-    return nil, nil
-  end
-  
-  -- When pcall succeeds with a function that returns multiple values,
-  -- it wraps them in a single return value. We need to call init_window directly.
-  local buf, win = init_window()
-  
-  -- Initial message
-  local welcome_msg = [[
-   ████████ ██   ██ ███████      █████  ██████   ██████ ██   ██     ██   ██ ██ ██    ██ ███████ 
-      ██    ██   ██ ██          ██   ██ ██   ██ ██      ██   ██     ██   ██ ██ ██    ██ ██      
-      ██    ███████ █████       ███████ ██████  ██      ███████     ███████ ██ ██    ██ █████   
-      ██    ██   ██ ██          ██   ██ ██   ██ ██      ██   ██     ██   ██ ██  ██  ██  ██      
-      ██    ██   ██ ███████     ██   ██ ██   ██  ██████ ██   ██     ██   ██ ██   ████   ███████ 
-                                                                                                
-  Welcome to TheArchHive with Claude integration!
-  I'm ready to help you optimize your Arch Linux system.
-  
-  Press <Space>ca to ask a question or type any message below:
-  ]]
-  
-  M.display_message(buf, welcome_msg)
-  
-  -- Set up keymaps - safer approach
-  if buf and win then
-    local keymap_ok, keymap_err = pcall(function()
-      vim.api.nvim_buf_set_keymap(buf, 'n', '<Space>ca', 
-        string.format([[<Cmd>lua require('claude').handle_input(%d, %d)<CR>]], buf, win), 
-        {noremap = true, silent = true})
-    end)
-    
-    if not keymap_ok then
-      print("Error setting up keymaps: " .. tostring(keymap_err))
-    end
-  else
-    print("Error: Invalid buffer or window")
-  end
-  
-  return buf, win
-end
-
--- Set up commands
-function M.setup()
-  vim.api.nvim_create_user_command('Claude', function()
-    local ok, result = pcall(M.init)
-    if not ok then
-      print("Error running Claude: " .. tostring(result))
-    end
-  end, {})
-  
-  vim.api.nvim_create_user_command('ClaudeSnapshot', function()
-    local ok, result_or_err = pcall(function()
-      local snapshot, err = M.create_snapshot()
-      if snapshot then
-        print("Snapshot created: " .. (snapshot.snapshot_path or "unknown path"))
-      else
-        print("Failed to create snapshot: " .. (err or "Unknown error"))
-      end
-    end)
-    
-    if not ok then
-      print("Error creating snapshot: " .. tostring(result_or_err))
-    end
-  end, {})
-  
-  -- Add script extraction command
-  vim.api.nvim_create_user_command('ClaudeExtractScript', function()
-    local buf = vim.api.nvim_get_current_buf()
-    M.offer_script_execution(buf)
-  end, {})
-  
-  -- Add command to attach to tmux session
-  vim.api.nvim_create_user_command('ClaudeTmux', function()
-    M.attach_to_tmux_session('claude-script')
-  end, {})
-  
-  -- Set up key bindings
-  vim.api.nvim_set_keymap('n', '<Space>cc', '<Cmd>Claude<CR>', {noremap = true, silent = true})
-  vim.api.nvim_set_keymap('n', '<Space>cs', '<Cmd>ClaudeExtractScript<CR>', {noremap = true, silent = true})
-  vim.api.nvim_set_keymap('n', '<Space>ta', '<Cmd>ClaudeTmux<CR>', {noremap = true, silent = true})
-end
-
-return M window
+-- Initialize window
 local function init_window()
   local win_width = math.floor(vim.o.columns * 0.8)
   local win_height = math.floor(vim.o.lines * 0.8)
@@ -384,6 +293,38 @@ function M.generate_system_context()
   return context
 end
 
+-- Display message in buffer safely
+function M.display_message(buf, message)
+  -- Check if buffer exists and is valid
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    print("Error: Buffer is not valid")
+    return
+  end
+  
+  -- Ensure message is a string
+  message = tostring(message or "")
+  
+  -- Split message into lines
+  local lines = {}
+  for line in message:gmatch("[^\r\n]+") do
+    table.insert(lines, line)
+  end
+  
+  -- If no lines, add an empty one
+  if #lines == 0 then
+    lines = {""}
+  end
+  
+  -- Use pcall to safely set buffer lines
+  local ok, err = pcall(function()
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  end)
+  
+  if not ok then
+    print("Error displaying message: " .. err)
+  end
+end
+
 -- Function to send message to Claude API (with better error and timeout handling)
 function M.send_message(user_message, display_callback, buf)
   local conf = M.config or init_config()
@@ -487,36 +428,30 @@ function M.send_message(user_message, display_callback, buf)
   return response_text
 end
 
--- Display message in buffer safely
-function M.display_message(buf, message)
-  -- Check if buffer exists and is valid
-  if not buf or not vim.api.nvim_buf_is_valid(buf) then
-    print("Error: Buffer is not valid")
+-- Function to handle user input
+function M.handle_input(buf, win)
+  local prompt = "Ask Claude: "
+  local input = vim.fn.input({
+    prompt = prompt,
+    cancelreturn = "__CANCEL__"
+  })
+  
+  if input == "__CANCEL__" or input == "" then
     return
   end
   
-  -- Ensure message is a string
-  message = tostring(message or "")
+  -- Display user question
+  M.display_message(buf, "You: " .. input .. "\n\nClaude: ")
   
-  -- Split message into lines
-  local lines = {}
-  for line in message:gmatch("[^\r\n]+") do
-    table.insert(lines, line)
-  end
-  
-  -- If no lines, add an empty one
-  if #lines == 0 then
-    lines = {""}
-  end
-  
-  -- Use pcall to safely set buffer lines
-  local ok, err = pcall(function()
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  end)
-  
-  if not ok then
-    print("Error displaying message: " .. err)
-  end
+  -- Send to Claude API
+  M.send_message(input, function(buffer, response)
+    if buffer and vim.api.nvim_buf_is_valid(buffer) then
+      M.display_message(buffer, "You: " .. input .. "\n\nClaude: " .. response)
+      
+      -- Check for scripts in response
+      M.offer_script_execution(buffer, response)
+    end
+  end, buf)
 end
 
 -- Extract multiple scripts from Claude's response
@@ -538,7 +473,9 @@ function M.extract_scripts(text)
       current_script = ""
     elseif in_script and line:match("^```") then
       in_script = false
-      table.insert(scripts, current_script)
+      if current_script ~= "" then
+        table.insert(scripts, current_script)
+      end
     elseif in_script then
       current_script = current_script .. line .. "\n"
     end
@@ -575,6 +512,51 @@ function M.save_script_to_file(script_text)
   os.execute("chmod +x " .. script_file)
   
   return script_file
+end
+
+-- Save script to user-specified location
+function M.save_script_to_user_file(script_text)
+  -- Prompt for a file path
+  local prompt = "Save script to path: "
+  local default_path = os.getenv("HOME") .. "/scripts/claude_script_" .. os.date("%Y%m%d%H%M%S") .. ".sh"
+  local file_path = vim.fn.input({
+    prompt = prompt,
+    default = default_path,
+    cancelreturn = "__CANCEL__"
+  })
+  
+  if file_path == "__CANCEL__" or file_path == "" then
+    return nil, "Canceled by user"
+  end
+  
+  -- Expand ~ in path
+  file_path = file_path:gsub("^~", os.getenv("HOME"))
+  
+  -- Ensure directory exists
+  local dir = vim.fn.fnamemodify(file_path, ":h")
+  if vim.fn.isdirectory(dir) == 0 then
+    local ok = vim.fn.mkdir(dir, "p")
+    if ok == 0 then
+      return nil, "Failed to create directory: " .. dir
+    end
+  end
+  
+  -- Write script to file
+  local file = io.open(file_path, "w")
+  if not file then
+    return nil, "Failed to create script file: " .. file_path
+  end
+  
+  file:write("#!/bin/bash\n\n")
+  file:write("# Script generated by TheArchHive Claude\n")
+  file:write("# " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n\n")
+  file:write(script_text)
+  file:close()
+  
+  -- Make script executable
+  os.execute("chmod +x " .. file_path)
+  
+  return file_path
 end
 
 -- Function to attach to a tmux session
@@ -678,104 +660,22 @@ function M.execute_script(script_file)
   return true
 end
 
--- Function to validate a script
-function M.validate_script(script_text, validation_level)
-  local conf = M.config or init_config()
-  validation_level = validation_level or "normal"
+-- Display script in a preview window
+function M.preview_script(script_text)
+  -- Create a new buffer for preview
+  local preview_buf = vim.api.nvim_create_buf(false, true)
   
-  -- Send to MCP server for validation
-  local response, err = make_http_request(
-    conf.mcp_url .. "/script/validate", 
-    "POST", 
-    {
-      body = json.encode({
-        script = script_text,
-        validation_level = validation_level
-      })
-    }
-  )
-  
-  if err or not response or response.status ~= 200 then
-    return nil, "Failed to validate script: " .. (err or (response and response.body or "Unknown error"))
+  -- Set buffer content
+  local lines = {}
+  for line in script_text:gmatch("[^\r\n]+") do
+    table.insert(lines, line)
   end
   
-  local ok, parsed_body = pcall(json.decode, response.body)
-  if not ok then
-    return nil, "Failed to parse validation response: " .. tostring(parsed_body)
-  end
+  vim.api.nvim_buf_set_lines(preview_buf, 0, -1, false, lines)
   
-  return parsed_body, nil
-end
-
--- Function to execute a validated script
-function M.execute_validated_script(script_file, validation_id)
-  -- Try tmux first if available
-  if vim.fn.executable("tmux") == 1 then
-    -- Check if we're already in a tmux session
-    local in_tmux = os.getenv("TMUX") ~= nil
-    
-    if in_tmux then
-      -- Create a new window in current tmux session
-      os.execute(string.format('tmux new-window -n "Claude-Script" "bash %s; echo; echo Press Enter to close...; read"', script_file))
-      
-      -- Start a background job to poll validation results
-      vim.defer_fn(function()
-        M.poll_validation_results(validation_id)
-      end, 1000)
-      
-      return true
-    else
-      -- Start a new tmux session
-      os.execute(string.format('tmux new-session -d -s claude-script "bash %s; echo; echo Press Enter to close...; read"', script_file))
-      
-      -- Show a floating window with instructions
-      local info_buf = vim.api.nvim_create_buf(false, true)
-      vim.api.nvim_buf_set_lines(info_buf, 0, -1, false, {
-        "Script is running in tmux session 'claude-script'",
-        "",
-        "Press <Space>ta to attach to this session",
-        "or run this command in your terminal:",
-        "tmux attach -t claude-script"
-      })
-      
-      local width = 50
-      local height = 5
-      local row = math.floor((vim.o.lines - height) / 2)
-      local col = math.floor((vim.o.columns - width) / 2)
-      
-      local win = vim.api.nvim_open_win(info_buf, true, {
-        relative = 'editor',
-        width = width,
-        height = height,
-        row = row,
-        col = col,
-        style = 'minimal',
-        border = 'rounded'
-      })
-      
-      -- Add keymap to close the window
-      vim.api.nvim_buf_set_keymap(info_buf, 'n', 'q', 
-        [[<Cmd>lua vim.api.nvim_win_close(0, true)<CR>]], 
-        {noremap = true, silent = true})
-      
-      -- Add keymap to attach to the tmux session
-      vim.api.nvim_buf_set_keymap(info_buf, 'n', '<Space>ta', 
-        [[<Cmd>lua require('claude').attach_to_tmux_session('claude-script')<CR>]], 
-        {noremap = true, silent = true})
-      
-      vim.api.nvim_echo({{"Script is running in tmux session 'claude-script'. Press <Space>ta to attach or q to close this message.", "Normal"}}, true, {})
-      
-      -- Start a background job to poll validation results
-      vim.defer_fn(function()
-        M.poll_validation_results(validation_id)
-      end, 1000)
-      
-      return true
-    end
-  end
-  
-  -- Fallback to terminal buffer in Neovim
-  local term_buf = vim.api.nvim_create_buf(false, true)
+  -- Set buffer options
+  vim.api.nvim_buf_set_option(preview_buf, 'bufhidden', 'wipe')
+  vim.api.nvim_buf_set_option(preview_buf, 'filetype', 'bash')
   
   -- Get window dimensions
   local width = math.floor(vim.o.columns * 0.8)
@@ -783,8 +683,8 @@ function M.execute_validated_script(script_file, validation_id)
   local row = math.floor((vim.o.lines - height) / 2)
   local col = math.floor((vim.o.columns - width) / 2)
   
-  -- Create terminal window
-  local term_win = vim.api.nvim_open_win(term_buf, true, {
+  -- Create preview window
+  local preview_win = vim.api.nvim_open_win(preview_buf, true, {
     relative = 'editor',
     width = width,
     height = height,
@@ -794,158 +694,206 @@ function M.execute_validated_script(script_file, validation_id)
     border = 'rounded'
   })
   
-  -- Start terminal with script
-  vim.fn.termopen("bash " .. script_file .. "; echo; echo Press Enter to close...; read", {
-    on_exit = function()
-      if vim.api.nvim_win_is_valid(term_win) then
-        vim.api.nvim_win_close(term_win, true)
+  -- Set window options
+  vim.api.nvim_win_set_option(preview_win, 'winblend', 0)
+  vim.api.nvim_win_set_option(preview_win, 'cursorline', true)
+  
+  -- Add title to the window
+  vim.api.nvim_buf_set_name(preview_buf, "Script Preview")
+  
+  -- Return buffer and window IDs
+  return preview_buf, preview_win
+end
+
+-- Offer script execution to the user
+-- Initialize Claude
+function M.init()
+  -- Load configuration
+  init_config()
+  
+  -- Create buffer and window with error handling
+  local ok, result = pcall(init_window)
+  if not ok then
+    print("Error initializing Claude window: " .. tostring(result))
+    return nil, nil
+  end
+  
+  -- When pcall succeeds with a function that returns multiple values,
+  -- it returns the results directly. No need for another call to init_window.
+  local buf, win
+  if type(result) == "number" then
+    -- If result is a buffer ID
+    buf = result
+    -- The second return value is the window ID
+    -- It should be in the additional return values from pcall
+    win = select(2, pcall(init_window))
+  else
+    -- Error occurred or unexpected return type
+    print("Unexpected result from init_window")
+    return nil, nil
+  end
+  
+  -- Initial message
+  local welcome_msg = [[
+   ████████ ██   ██ ███████      █████  ██████   ██████ ██   ██     ██   ██ ██ ██    ██ ███████ 
+      ██    ██   ██ ██          ██   ██ ██   ██ ██      ██   ██     ██   ██ ██ ██    ██ ██      
+      ██    ███████ █████       ███████ ██████  ██      ███████     ███████ ██ ██    ██ █████   
+      ██    ██   ██ ██          ██   ██ ██   ██ ██      ██   ██     ██   ██ ██  ██  ██  ██      
+      ██    ██   ██ ███████     ██   ██ ██   ██  ██████ ██   ██     ██   ██ ██   ████   ███████ 
+                                                                                                
+  Welcome to TheArchHive with Claude integration!
+  I'm ready to help you optimize your Arch Linux system.
+  
+  Press <Space>ca to ask a question or type any message below:
+  ]]
+  
+  M.display_message(buf, welcome_msg)
+  
+  -- Set up keymaps - safer approach
+  if buf and win then
+    local keymap_ok, keymap_err = pcall(function()
+      vim.api.nvim_buf_set_keymap(buf, 'n', '<Space>ca', 
+        string.format([[<Cmd>lua require('claude').handle_input(%d, %d)<CR>]], buf, win), 
+        {noremap = true, silent = true})
+    end)
+    
+    if not keymap_ok then
+      print("Error setting up keymaps: " .. tostring(keymap_err))
+    end
+  else
+    print("Error: Invalid buffer or window")
+  end
+  
+  return buf, win
+end
+
+function M.offer_script_execution(buf, response_text)
+  -- Extract scripts from the response
+  local scripts = M.extract_scripts(response_text)
+  
+  -- If no scripts found, return
+  if #scripts == 0 then
+    return
+  end
+  
+  -- Process each script
+  for i, script_text in ipairs(scripts) do
+    -- Generate a hash for this script for deduplication
+    local script_hash = M.simple_hash(script_text)
+    
+    -- Skip if already processed
+    if M.processed_scripts[script_hash] then
+      -- This script has already been processed, skip it
+      goto continue
+    end
+    
+    -- Mark as processed
+    M.processed_scripts[script_hash] = true
+    
+    -- Create a floating window for options
+    local options_buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(options_buf, 0, -1, false, {
+      "Claude has provided a script. What would you like to do?",
+      "",
+      "Press 'e' to execute the script",
+      "Press 'p' to preview the script",
+      "Press 's' to save the script to a file",
+      "Press 'q' to dismiss this message"
+    })
+    
+    local width = 50
+    local height = 6
+    local row = math.floor((vim.o.lines - height) / 2)
+    local col = math.floor((vim.o.columns - width) / 2)
+    
+    local options_win = vim.api.nvim_open_win(options_buf, true, {
+      relative = 'editor',
+      width = width,
+      height = height,
+      row = row,
+      col = col,
+      style = 'minimal',
+      border = 'rounded'
+    })
+    
+    -- Function to cleanup
+    local function cleanup()
+      if vim.api.nvim_win_is_valid(options_win) then
+        vim.api.nvim_win_close(options_win, true)
       end
     end
-  })
-  
-  -- Start a background job to poll validation results
-  vim.defer_fn(function()
-    M.poll_validation_results(validation_id)
-  end, 1000)
-  
-  -- Enter terminal mode automatically
-  vim.cmd("startinsert")
-  
-  return true
-end
-
--- Function to fetch validation results
-function M.fetch_validation_results(validation_id)
-  local conf = M.config or init_config()
-  
-  local response, err = make_http_request(
-    conf.mcp_url .. "/script/results/" .. validation_id, 
-    "GET"
-  )
-  
-  if err or not response or response.status ~= 200 then
-    return nil, "Failed to fetch validation results: " .. (err or (response and response.body or "Unknown error"))
-  end
-  
-  local ok, parsed_body = pcall(json.decode, response.body)
-  if not ok then
-    return nil, "Failed to parse validation results: " .. tostring(parsed_body)
-  end
-  
-  return parsed_body, nil
-end
-
--- Poll validation results periodically
-function M.poll_validation_results(validation_id)
-  local interval = 2000  -- Check every 2 seconds
-  local max_attempts = 30  -- Try for up to 1 minute
-  local attempts = 0
-  
-  local function check_results()
-    attempts = attempts + 1
     
-    if attempts > max_attempts then
-      -- Stop polling after max attempts
-      vim.api.nvim_echo({{"Validation timed out after " .. max_attempts * interval / 1000 .. " seconds", "WarningMsg"}}, true, {})
-      return
-    end
+    -- Setup keymaps for actions
+    vim.api.nvim_buf_set_keymap(options_buf, 'n', 'e', '', {
+      noremap = true,
+      callback = function()
+        cleanup()
+        
+        -- Save script to temporary file
+        local script_file, err = M.save_script_to_file(script_text)
+        if not script_file then
+          vim.api.nvim_echo({{"Error saving script: " .. err, "ErrorMsg"}}, true, {})
+          return
+        end
+        
+        -- Execute the script
+        M.execute_script(script_file)
+      end
+    })
     
-    local results, err = M.fetch_validation_results(validation_id)
-    
-    if err then
-      -- Error fetching results
-      vim.defer_fn(check_results, interval)
-      return
-    end
-    
-    if results.status == "completed" then
-      -- Process completed validation
-      M.process_validation_results(results)
-    else
-      -- Not done yet, keep polling
-      vim.defer_fn(check_results, interval)
-    end
-  end
-  
-  -- Start polling
-  vim.defer_fn(check_results, interval)
-end
-
--- Process and display validation results
-function M.process_validation_results(results)
-  -- Create a new buffer for results
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_option(buf, 'bufhidden', 'wipe')
-  
-  -- Prepare lines to display
-  local lines = {
-    "# Script Validation Results",
-    "",
-    "Validation ID: " .. results.validation_id,
-    "Status: " .. results.status,
-    "Start time: " .. results.start_time,
-    "End time: " .. (results.end_time or "N/A"),
-    "",
-    "## Execution Steps:",
-    ""
-  }
-  
-  local has_errors = false
-  
-  -- Add each step
-  for _, step in ipairs(results.steps) do
-    table.insert(lines, "### Step " .. step.step .. ": `" .. step.command .. "`")
-    table.insert(lines, "Exit code: " .. step.exit_code)
-    if step.exit_code ~= 0 then
-      has_errors = true
-      table.insert(lines, "**ERROR: Command failed**")
-    end
-    table.insert(lines, "")
-    table.insert(lines, "```")
-    
-    -- Split output by lines
-    for output_line in step.output:gmatch("[^\r\n]+") do
-      table.insert(lines, output_line)
-    end
-    
-    table.insert(lines, "```")
-    table.insert(lines, "")
-  end
-  
-  -- Summary
-  if has_errors then
-    table.insert(lines, "## Summary: Script had errors during execution")
-  else
-    table.insert(lines, "## Summary: Script executed successfully")
-  end
-  
-  -- Set buffer content
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.api.nvim_buf_set_option(buf, 'filetype', 'markdown')
-  
-  -- Create window
-  local width = math.floor(vim.o.columns * 0.8)
-  local height = math.floor(vim.o.lines * 0.8)
-  local row = math.floor((vim.o.lines - height) / 2)
-  local col = math.floor((vim.o.columns - width) / 2)
-  
-  local win = vim.api.nvim_open_win(buf, true, {
-    relative = 'editor',
-    width = width,
-    height = height,
-    row = row,
-    col = col,
-    style = 'minimal',
-    border = 'rounded'
-  })
-  
-  -- Store validation results to send back to Claude if needed
-  M.last_validation_results = results
-  
-  -- Add keybinding to send results to Claude
-  vim.api.nvim_buf_set_keymap(buf, 'n', '<Space>cv', 
-    [[<Cmd>lua require('claude').send_validation_to_claude()<CR>]], 
-    {noremap = true, silent = true})
-  
-  vim.api.nvim_echo({{"Press <Space>cv to send these validation results to Claude for analysis", "Normal"}}, true, {})
-end
+    vim.api.nvim_buf_set_keymap(options_buf, 'n', 'p', '', {
+      noremap = true,
+      callback = function()
+        cleanup()
+        
+        -- Preview the script
+        local preview_buf, preview_win = M.preview_script(script_text)
+        
+        -- Add keymap to close preview
+        vim.api.nvim_buf_set_keymap(preview_buf, 'n', 'q', '', {
+          noremap = true,
+          callback = function()
+            if vim.api.nvim_win_is_valid(preview_win) then
+              vim.api.nvim_win_close(preview_win, true)
+            end
+            
+            -- Save script to user file
+            local saved_file, err = M.save_script_to_user_file(script_text)
+            if not saved_file then
+              vim.api.nvim_echo({{"Error saving script: " .. err, "ErrorMsg"}}, true, {})
+              return
+            end
+            
+            vim.api.nvim_echo({{"Script saved to: " .. saved_file, "Normal"}}, true, {})
+          end
+        })
+          callback = function()
+            if vim.api.nvim_win_is_valid(preview_win) then
+              vim.api.nvim_win_close(preview_win, true)
+            end
+          end
+        })
+        
+        -- Add keymap to execute from preview
+        vim.api.nvim_buf_set_keymap(preview_buf, 'n', 'e', '', {
+          noremap = true,
+          callback = function()
+            if vim.api.nvim_win_is_valid(preview_win) then
+              vim.api.nvim_win_close(preview_win, true)
+            end
+            
+            -- Save script to temporary file
+            local script_file, err = M.save_script_to_file(script_text)
+            if not script_file then
+              vim.api.nvim_echo({{"Error saving script: " .. err, "ErrorMsg"}}, true, {})
+              return
+            end
+            
+            -- Execute the script
+            M.execute_script(script_file)
+          end
+        })
+        
+        -- Add keymap to save from preview
+        vim.api.nvim_buf_set_keymap(preview_buf, 'n', 's', '', {
+          noremap = true,
