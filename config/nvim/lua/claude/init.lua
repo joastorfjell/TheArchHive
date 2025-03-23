@@ -1,3 +1,46 @@
+-- Add this debugging function to your claude/init.lua file
+-- Place it near the top of the file
+
+function M.debug_config()
+  -- Print information about config paths and loading
+  local config_module = safe_require('claude.config')
+  print("Config module loaded:", config_module ~= nil)
+  
+  if config_module then
+    print("Config path:", config_module.config_path)
+    print("API configured flag:", config_module.api_configured)
+    
+    -- Try to read the config file
+    local file = io.open(config_module.config_path, "r")
+    if file then
+      print("Config file exists and is readable")
+      local content = file:read("*all")
+      print("Config file content:", content)
+      file:close()
+      
+      -- Try to parse the JSON
+      local json = safe_require('json')
+      if json then
+        local ok, config = pcall(json.decode, content)
+        if ok then
+          print("JSON parsing succeeded")
+          print("API key present:", config.api_key ~= nil)
+        else
+          print("JSON parsing failed:", config)
+        end
+      else
+        print("JSON module not available")
+      end
+    else
+      print("Config file cannot be opened")
+    end
+  end
+end
+
+-- Call this from your setup function to see the debug info when Neovim starts
+-- Add to the end of M.setup() function:
+-- M.debug_config()
+
 -- TheArchHive: Claude integration for Neovim
 -- Fixed version that handles buffer and keymap errors
 
@@ -21,34 +64,53 @@ local function safe_require(module)
     return result
 end
 
--- Load configuration
+-- Update the load_config function in your init.lua with this improved version
 local function load_config()
-    local config_module = safe_require('claude.config')
-    if not config_module then
-        return {
-            config_path = nil,
-            api_configured = false
-        }
+    -- First try to load the config module
+    local ok, config_module = pcall(require, 'claude.config')
+    if not ok then
+        print("Error loading claude.config module:", config_module)
+        return nil
     end
     
-    -- Try to load the config file
-    if config_module.config_path then
-        local file = io.open(config_module.config_path, "r")
-        if file then
-            local content = file:read("*all")
-            file:close()
-            
-            local json = safe_require('json')
-            if json then
-                local ok, config = pcall(json.decode, content)
-                if ok then
-                    return config
-                end
-            end
-        end
+    -- Check if config path is set
+    if not config_module.config_path then
+        print("No config path defined in claude.config")
+        return nil
     end
     
-    return nil
+    -- Try to open the config file
+    local file = io.open(config_module.config_path, "r")
+    if not file then
+        print("Could not open config file at:", config_module.config_path)
+        return nil
+    end
+    
+    -- Read the file content
+    local content = file:read("*all")
+    file:close()
+    
+    -- Try to load the JSON module
+    local ok, json = pcall(require, 'json')
+    if not ok then
+        print("Error loading JSON module:", json)
+        return nil
+    end
+    
+    -- Try to parse the JSON
+    local ok, config = pcall(json.decode, content)
+    if not ok then
+        print("Error parsing JSON from config file:", config)
+        return nil
+    end
+    
+    -- Make sure the API key is present
+    if not config.api_key then
+        print("No API key found in config file")
+        return nil
+    end
+    
+    return config
 end
 
 -- Initialize Claude window
